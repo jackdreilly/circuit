@@ -4,3 +4,7 @@ test-output/
 .pytest_cache/
 .vscode/
 *~
+data.json
+go.js
+gojs.html
+gojs.single.html
