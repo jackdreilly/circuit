@@ -17,6 +17,7 @@ from circuit import (
     and_gate,
     bit,
     bus,
+    stepper,
     byte,
     decoder,
     inputs,
@@ -216,7 +217,7 @@ def test_bus():
 
 
 def test_byte(circuit):
-    inputs = bus() >> Line("s")
+    inputs = Line("s") >> bus()
     outputs = inputs >> byte
     assert len(inputs) == 9
     assert len(outputs) == 8
@@ -224,38 +225,39 @@ def test_byte(circuit):
         inputs,
         outputs,
         (
-            (("1", 1), "1"),
-            (("25", 1), "25"),
-            (("25", 0), "25"),
-            (("42", 0), "25"),
-            (("42", 1), "42"),
-            (("0", 1), "0"),
-            (("251", 1), "251"),
-            (("120", 1), "120"),
+            ((1, "1"), "1"),
+            ((1, "25"), "25"),
+            ((0, "25"), "25"),
+            ((0, "42"), "25"),
+            ((1, "42"), "42"),
+            ((1, "0"), "0"),
+            ((1, "251"), "251"),
+            ((1, "120"), "120"),
         ),
+        draw=1,
     )
 
 
 def test_register(circuit):
-    inputs = bus() >> Lines("se")
+    inputs = Lines("se") >> bus()
     outputs = inputs >> register
     truth_table_test(
         inputs,
         outputs,
         (
-            (("1", 1, 1), "1"),
-            (("1", 1, 0), "0"),
-            (("1", 0, 0), "0"),
-            (("1", 0, 1), "1"),
-            (("25", 0, 1), "1"),
-            (("25", 0, 0), "0"),
-            (("25", 0, 1), "1"),
-            (("25", 1, 0), "0"),
-            (("4", 0, 1), "25"),
-            (("4", 1, 0), "0"),
-            (("4", 0, 0), "0"),
-            (("12", 0, 1), "4"),
-            (("12", 1, 1), "12"),
+            ((1, 1, "1"), "1"),
+            ((1, 0, "1"), "0"),
+            ((0, 0, "1"), "0"),
+            ((0, 1, "1"), "1"),
+            ((0, 1, "25"), "1"),
+            ((0, 0, "25"), "0"),
+            ((0, 1, "25"), "1"),
+            ((1, 0, "25"), "0"),
+            ((0, 1, "4"), "25"),
+            ((1, 0, "4"), "0"),
+            ((0, 0, "4"), "0"),
+            ((0, 1, "12"), "4"),
+            ((1, 1, "12"), "12"),
         ),
     )
 
@@ -279,10 +281,8 @@ def test_ram(circuit):
         mar_inputs = bus()
         sa = Line("sa")
     previous_state = {}
-    all_inputs = s >> e >> inputs >> sa >> mar_inputs
+    all_inputs = s >> e >> sa >> inputs >> mar_inputs
     all_inputs >> ram
-    mar_inputs = list(mar_inputs)
-    inputs = list(inputs)
     mi1 = mar_inputs[0]
     i1 = inputs[0]
     i2 = inputs[1]
@@ -329,6 +329,7 @@ def test_ram(circuit):
     chkv(i1, 0)
     setv(e, 1)
     run()
+    viz()
     chkv(i1, 1)
     chkv(i2, 0)
     setv(e, 0)
@@ -572,7 +573,7 @@ def test_alu(circuit):
         op = bus(3)
     carry_in = Line("CarryIn")
     inputs = op >> carry_in >> a >> b
-    a_larger, equal, out_zero, carry_out, cs = (inputs >> alu).split(1,1,1,1)
+    a_larger, equal, out_zero, carry_out, cs = (inputs >> alu).split(1, 1, 1, 1)
     feed_dict = {i: 0 for i in inputs}
     feed_dict[op[0]] = 0
     feed_dict[op[1]] = 0
@@ -589,7 +590,7 @@ def test_alu(circuit):
     assert not simulation[cs[3]]
     assert simulation[carry_out]
     assert not simulation[out_zero]
-    
+
     feed_dict = {i: 0 for i in inputs}
     feed_dict[op[0]] = 1
     feed_dict[op[1]] = 1
@@ -644,10 +645,11 @@ def test_alu(circuit):
     assert simulation[cs[3]]
     assert simulation[carry_out]
     assert not simulation[out_zero]
-    
+
+
 def test_bus1(circuit):
     inputs = bus(3)
-    s = Line('s')
+    s = Line("s")
     inputs = s >> inputs
     output = inputs >> bus1
     truth_table_test(
@@ -664,10 +666,12 @@ def test_bus1(circuit):
         draw=1,
     )
 
+
 def test_cpu(circuit):
+    skip()
     with scope("Signals"):
-        s,e, carry_in = Lines('se') >> Line("CarryIn")
-    with scope('Op'):
+        s, e, carry_in = Lines("se") >> Line("CarryIn")
+    with scope("Op"):
         op = bus(3)
     with scope("Bus"):
         b = bus()
@@ -681,3 +685,24 @@ def test_cpu(circuit):
     feed_dict[b[2]] = 1
     simulation = simulate(feed_dict, circuit)
     graph_tools.draw(circuit, feed_dict, simulation)
+
+def test_stepper(circuit):
+    inputs = Line("Clock")
+    output = inputs >> stepper
+    truth_table_test(
+        inputs,
+        output,
+        (
+            # ((0,), (1, 0, 0, 0, 0, 0)),
+            # ((0,), (1, 0, 0, 0, 0, 0)),
+            # ((1,), (1, 0, 0, 0, 0, 0)),
+            # ((0,), (0, 1, 0, 0, 0, 0)),
+            # ((1,), (0, 1, 0, 0, 0, 0)),
+            ((0,), (1, 0)),
+            ((0,), (1, 0)),
+            ((1,), (1, 0)),
+            ((0,), (0, 1)),
+            ((1,), (0, 1)),
+        ),
+        draw=1,
+    )

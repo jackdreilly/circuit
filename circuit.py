@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Un
 from cached_property import cached_property
 from typing_extensions import Deque
 
-BYTE_SIZE = 4
+BYTE_SIZE = 8
 
 
 class ScopeStack:
@@ -355,7 +355,7 @@ class BitGate(Gate):
 class ByteGate(Gate):
     def run(self, in_lines: Lines) -> Lines:
         s, input_lines = in_lines.pop()
-        return [s >> input_line >> bit for input_line in input_lines]
+        return [input_line >> s >> bit for input_line in input_lines]
 
 
 class Enabler(Gate):
@@ -381,17 +381,20 @@ class Decoder(Gate):
 
 
 class Tie(Gate):
+    output_scope = None
     def run(self, in_lines: Lines) -> Lines:
         from_lines, to_lines = in_lines.split()
         to_lines <<= from_lines
+        return to_lines
 
 
 class RAM(Gate):
     def run(self, in_lines: Lines) -> Lines:
-        s, e, bus, sa, mar_inputs = in_lines.split(1, 1, BYTE_SIZE, 1)
+        s, e, sa, rest = in_lines.split(1, 1, 1)
+        bus, mar_inputs = rest.split()
         se = Line("Fixed-MAR-E", default_value=1)
         with scope("MAR"):
-            mar_outputs = mar_inputs >> sa >> se >> register
+            mar_outputs = sa >> se >> mar_inputs >> register
         with scope("Decoder"):
             rows, cols = mar_outputs.split()
             with scope("RowDecoder"):
@@ -409,7 +412,7 @@ class RAM(Gate):
                                     s_selector = row_col_selector >> s >> and_gate
                                 with scope("E"):
                                     e_selector = row_col_selector >> e >> and_gate
-                            bus >> s_selector >> e_selector >> register >> bus >> tie
+                            s_selector >> e_selector >> bus >> register >> bus >> tie
 
 
 class RShift(Gate):
@@ -430,6 +433,7 @@ class SplitGate(Gate):
     def run(self, in_lines: Lines) -> Lines:
         return [aa >> bb >> self.split_op for aa, bb in in_lines.zip]
 
+
 class MapGate(Gate):
     map_op: Gate
 
@@ -441,13 +445,13 @@ class PassGate(Gate):
     def run(self, in_lines: Lines) -> Lines:
         return _if(in_lines, True)
 
+
 nand = NandGate()
 not_gate = NotGate()
 and_gate = AndGate()
 or_gate = OrGate()
 xor_gate = XorGate()
 pass_gate = PassGate()
-
 
 
 class Passer(MapGate):
@@ -537,12 +541,15 @@ class ZeroGate(Gate):
     def run(self, in_lines: Lines) -> Lines:
         return in_lines >> or_gate >> not_gate
 
+
 class Bus1(Gate):
     def run(self, in_lines: Lines) -> Lines:
         s, lines = in_lines.pop()
         and_lines, or_line = lines.split(-1)
         not_s = s >> not_gate
-        return Lines([line >> not_s >> and_gate for line in and_lines]) >> (or_line >> s >> or_gate)
+        return Lines([line >> not_s >> and_gate for line in and_lines]) >> (
+            or_line >> s >> or_gate
+        )
 
 
 class Alu(Gate):
@@ -556,7 +563,6 @@ class Alu(Gate):
         op_orer = lines >> orer
         op_ander = lines >> ander
         op_notter = lines >> notter
-        # return equal >> a_larger >> op_xorer >> op_decoder >> op_orer >> op_ander >> op_notter
         lshifter_out, lshifter = (carry_in >> a >> lshift).pop()
         rshifter_out, rshifter = (carry_in >> a >> rshift).pop()
         adder_out, op_adder = (carry_in >> a >> b >> adder).pop()
@@ -585,26 +591,58 @@ class Alu(Gate):
         with scope("Comparator"):
             rescope(outputs[4:])
 
+
 class Cpu(Gate):
     def run(self, in_lines: Lines) -> Lines:
-        s, e, op, carry_in, bus = in_lines.split(1,1, 3, 1)
+        s, e, op, carry_in, bus = in_lines.split(1, 1, 3, 1)
         with scope("Registers"):
             for _ in range(4):
                 s >> e >> bus >> register >> bus >> tie
         with scope("RAM"):
-            s >> e >> bus >> s >> bus >> ram
+            s >> e >> s >> bus >> bus >> ram
         with scope("BInput"):
             with scope("Tmp"):
                 tmp = s >> Line("TmpE", default_value=1) >> bus >> register
             b = s >> tmp >> bus1
         with scope("ALU"):
             alu_ = op >> carry_in >> bus >> b >> alu
-            a_larger, equal, out_zero, carry_out, cs = alu_.split(1,1,1,1)
+            a_larger, equal, out_zero, carry_out, cs = alu_.split(1, 1, 1, 1)
         with scope("ACC"):
             s >> e >> cs >> register >> bus >> tie
         return a_larger >> equal >> out_zero >> carry_out
 
+class Stepper(Gate):
+    N_OUTS = 2
+    def run(self, in_lines: Lines) -> Lines:
+        clk = in_lines
+        reset = Line("Reset", default_value=1)
+        with scope("NotClock"):
+            n_clk = clk >> not_gate
+        with scope("ResetClock"):
+            r_clk = clk >> reset >> or_gate
+        with scope("NotResetClock"):
+            r_n_clk = n_clk >> reset >> or_gate
+        with scope("NotReset"):
+            n_reset = reset >> not_gate
+        with scope("Ms"):
+            ms = n_reset
+            for i in range(self.N_OUTS):
+                for j, s in enumerate((r_n_clk, r_clk)):
+                    with scope(str(i * 2 + j)):
+                        ms >>= ms[-1] >> s >> bit
+        with scope("Steps"):
+            with scope("0"):
+                steps = reset >> (ms[2] >> not_gate) >> or_gate
+            for i in range(self.N_OUTS - 1):
+                with scope(str(i + 1)):
+                    steps >>= ms[(i+1) * 2] >> (ms[(i + 2) * 2] >> not_gate) >> and_gate
+        steps[-1] >> reset >> tie
+        return steps
+        
 
+
+
+stepper = Stepper()
 zero_gate = ZeroGate()
 comp_gate = ComparatorGate()
 comp = Comparator()
@@ -741,8 +779,8 @@ def simulate(
     previous_state.update(feed_dict)
     while True:
         queue: Deque[Op] = collections.deque(
-            [op for source in circuit.sources for op in circuit.downstream_ops(source)] + 
-            [constant_op(line, value) for line, value in feed_dict.items()]
+            [op for source in circuit.sources for op in circuit.downstream_ops(source)]
+            + [constant_op(line, value) for line, value in feed_dict.items()]
         )
         visited = set()
         changed = []
