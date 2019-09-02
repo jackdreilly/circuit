@@ -15,20 +15,21 @@
             var $ = go.GraphObject.make;  // for conciseness in defining templates
             diagram =
                 $(go.Diagram, "myDiagramDiv",  // Diagram refers to its DIV HTML element by id
-                    {
-                        layout: $(go.TreeLayout,  // the layout for the entire diagram
-                            {
-                                angle: 90,
-                                arrangement: go.TreeLayout.ArrangementHorizontal,
-                                isRealtime: false
-                            })
-                    });
+                    // {
+                    //     layout: $(go.TreeLayout,  // the layout for the entire diagram
+                    //         {
+                    //             angle: 90,
+                    //             arrangement: go.TreeLayout.ArrangementHorizontal,
+                    //             isRealtime: false
+                    //         })
+                    // }
+                    );
             // define the node template for non-groups
             diagram.groupTemplate =
                 $(go.Group, "Auto",
                     {
-                        layout: $(go.LayeredDigraphLayout,
-                            { direction: 90, columnSpacing: 10 }),
+                        // layout: $(go.LayeredDigraphLayout,
+                        //     { direction: 90, columnSpacing: 10 }),
                         isSubGraphExpanded: false,
                     },
                     $(go.Shape, "RoundedRectangle", // surrounds everything
@@ -55,8 +56,8 @@
                     $(go.Shape, { toArrow: "Standard" }, new go.Binding("stroke", "color"), new go.Binding("strokeWidth", "thickness")),); // the link shape
 
             // declare the Diagram.layout:
-            diagram.layout = $(go.LayeredDigraphLayout,
-                { direction: 90, layerSpacing: 10, isRealtime: false });
+            // diagram.layout = $(go.LayeredDigraphLayout,
+            //     { direction: 90, layerSpacing: 10, isRealtime: false });
 
             const response = await fetch("data.json");
             const json = await response.json();

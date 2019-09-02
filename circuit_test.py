@@ -5,6 +5,8 @@ from pprint import pprint
 
 import graph_tools
 
+import circuit as circuit_module
+
 from circuit import (
     Line,
     zero_gate,
@@ -96,6 +98,24 @@ def test_string_lines(circuit):
 def circuit():
     with new_circuit() as circuit:
         yield circuit
+
+
+@fixture
+def small_circuit():
+    old = ram.MEM_SIZE
+    ram.MEM_SIZE = 2
+    with new_circuit() as circuit:
+        yield circuit
+    ram.MEM_SIZE = old
+
+
+@fixture
+def smallest_circuit():
+    old = ram.MEM_SIZE
+    ram.MEM_SIZE = 1
+    with new_circuit() as circuit:
+        yield circuit
+    ram.MEM_SIZE = old
 
 
 def truth_table_test(lines: Lines, test_output, truth_table, draw=0):
@@ -272,7 +292,8 @@ def test_decoder(circuit):
     )
 
 
-def test_ram(circuit):
+def test_ram(small_circuit):
+    circuit = small_circuit
     with scope("BusInput"):
         inputs = bus()
         s = Line("s")
@@ -666,25 +687,16 @@ def test_bus1(circuit):
         draw=1,
     )
 
-
 def test_cpu(circuit):
-    skip()
-    with scope("Signals"):
-        s, e, carry_in = Lines("se") >> Line("CarryIn")
-    with scope("Op"):
-        op = bus(3)
-    with scope("Bus"):
-        b = bus()
-    inputs = s >> e >> op >> carry_in >> b
-    output = inputs >> cpu
-    feed_dict = {i: 0 for i in inputs}
-    feed_dict[s] = 1
-    feed_dict[e] = 1
-    feed_dict[op[1]] = 1
-    feed_dict[b[0]] = 1
-    feed_dict[b[2]] = 1
+    # skip()
+    # circuit = small_circuit
+    clock = circuit_module.Clock()
+    output = clock.lines >> cpu
+    feed_dict = clock.current_step
+    feed_dict.update({i: 0 for i in circuit.lines.typed("BUS")})
     simulation = simulate(feed_dict, circuit)
     graph_tools.draw(circuit, feed_dict, simulation)
+
 
 def test_stepper(circuit):
     inputs = Line("Clock")
@@ -693,16 +705,218 @@ def test_stepper(circuit):
         inputs,
         output,
         (
-            # ((0,), (1, 0, 0, 0, 0, 0)),
-            # ((0,), (1, 0, 0, 0, 0, 0)),
-            # ((1,), (1, 0, 0, 0, 0, 0)),
-            # ((0,), (0, 1, 0, 0, 0, 0)),
-            # ((1,), (0, 1, 0, 0, 0, 0)),
-            ((0,), (1, 0)),
-            ((0,), (1, 0)),
-            ((1,), (1, 0)),
-            ((0,), (0, 1)),
-            ((1,), (0, 1)),
+            ((1,), (1, 0, 0, 0, 0, 0)),
+            ((0,), (1, 0, 0, 0, 0, 0)),
+            ((0,), (1, 0, 0, 0, 0, 0)),
+            ((1,), (0, 1, 0, 0, 0, 0)),
+            ((0,), (0, 1, 0, 0, 0, 0)),
+            ((1,), (0, 0, 1, 0, 0, 0)),
+            ((0,), (0, 0, 1, 0, 0, 0)),
+            ((1,), (0, 0, 0, 1, 0, 0)),
+            ((0,), (0, 0, 0, 1, 0, 0)),
+            ((1,), (0, 0, 0, 0, 1, 0)),
+            ((0,), (0, 0, 0, 0, 1, 0)),
+            ((1,), (0, 0, 0, 0, 0, 1)),
+            ((0,), (0, 0, 0, 0, 0, 1)),
+            ((1,), (1, 0, 0, 0, 0, 0)),
+            ((0,), (1, 0, 0, 0, 0, 0)),
+            ((1,), (0, 1, 0, 0, 0, 0)),
+            ((0,), (0, 1, 0, 0, 0, 0)),
+            ((1,), (0, 0, 1, 0, 0, 0)),
+            ((0,), (0, 0, 1, 0, 0, 0)),
+            ((1,), (0, 0, 0, 1, 0, 0)),
+            ((0,), (0, 0, 0, 1, 0, 0)),
+            ((1,), (0, 0, 0, 0, 1, 0)),
+            ((0,), (0, 0, 0, 0, 1, 0)),
+            ((1,), (0, 0, 0, 0, 0, 1)),
+            ((0,), (0, 0, 0, 0, 0, 1)),
         ),
         draw=1,
     )
+
+
+def test_clock(circuit):
+    clock = circuit_module.Clock()
+    simulation = {}
+
+    def check(*v):
+        feed_dict = clock.step()
+        simulation.update(simulate(feed_dict, circuit, simulation))
+        graph_tools.draw(circuit, feed_dict, simulation)
+        pprint(simulation)
+        return v == [
+            simulation[l]
+            for l in [clock.clk, clock.delay_clk, clock.clk_s, clock.clk_e]
+        ]
+
+    check(1, 1, 1, 1)
+    check(0, 1, 0, 1)
+    check(0, 0, 0, 0)
+    check(1, 0, 0, 1)
+    check(1, 1, 1, 1)
+    check(0, 1, 0, 1)
+    check(0, 0, 0, 0)
+    check(1, 0, 0, 1)
+    check(1, 1, 1, 1)
+    check(0, 1, 0, 1)
+    check(0, 0, 0, 0)
+    check(1, 0, 0, 1)
+
+
+def test_controller(small_circuit):
+    skip()
+    circuit = small_circuit
+    clock = circuit_module.Clock()
+    inputs = clock.clk >> clock.clk_s >> clock.clk_e
+    output = inputs >> circuit_module.controller
+    simulation = {}
+    for i in range(21):
+        print(i)
+        simulation.update(simulate(clock.step(), circuit, simulation))
+    graph_tools.draw(circuit, clock.current_step, simulation)
+
+
+def test_register_selector_1(circuit):
+    clk_e, clk_s, alu_bit, op, ir = (
+        Line("ClkE"),
+        Line("ClkS"),
+        Line("ALU"),
+        Lines("123"),
+        bus(4),
+    )
+    output = clk_e >> clk_s >> alu_bit >> op >> ir >> circuit_module.RegisterSelector()
+    truth_table_test(
+        clk_e >> clk_s >> ir,
+        output,
+        (
+            ((0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0, 0, 0)),
+            ((1, 0, 0, 0, 0, 0), (0, 0, 0, 1, 0, 0, 0, 0)),
+            ((0, 1, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0, 0, 1)),
+            ((1, 1, 0, 0, 0, 0), (0, 0, 0, 1, 0, 0, 0, 1)),
+            ((0, 0, 0, 1, 0, 1), (0, 0, 0, 0, 0, 0, 0, 0)),
+            ((1, 0, 0, 1, 0, 1), (0, 0, 1, 0, 0, 0, 0, 0)),
+            ((0, 1, 0, 1, 0, 1), (0, 0, 0, 0, 0, 0, 1, 0)),
+            ((1, 1, 0, 1, 0, 1), (0, 0, 1, 0, 0, 0, 1, 0)),
+            ((0, 0, 0, 1, 0, 0), (0, 0, 0, 0, 0, 0, 0, 0)),
+            ((1, 0, 0, 1, 0, 0), (0, 0, 1, 1, 0, 0, 0, 0)),
+            ((0, 1, 0, 1, 0, 0), (0, 0, 0, 0, 0, 0, 0, 1)),
+            ((1, 1, 0, 1, 0, 0), (0, 0, 1, 1, 0, 0, 0, 1)),
+            ((0, 0, 1, 1, 0, 0), (0, 0, 0, 0, 0, 0, 0, 0)),
+            ((1, 0, 1, 1, 0, 0), (1, 0, 0, 1, 0, 0, 0, 0)),
+            ((0, 1, 1, 1, 0, 0), (0, 0, 0, 0, 0, 0, 0, 1)),
+            ((1, 1, 1, 1, 0, 0), (1, 0, 0, 1, 0, 0, 0, 1)),
+            ((0, 0, 0, 0, 1, 1), (0, 0, 0, 0, 0, 0, 0, 0)),
+            ((1, 0, 0, 0, 1, 1), (1, 0, 0, 1, 0, 0, 0, 0)),
+            ((0, 1, 0, 0, 1, 1), (0, 0, 0, 0, 1, 0, 0, 0)),
+            ((1, 1, 0, 0, 1, 1), (1, 0, 0, 1, 1, 0, 0, 0)),
+        ),
+        draw=1,
+    )
+
+def test_alu_runner(circuit):
+    with scope("StepperIn"):
+        stepper = bus(circuit_module.Stepper.N_OUTS - 1)
+    with scope("IrIn"):
+        ir = bus(8)
+    output = stepper >> ir >> circuit_module.AluRunner()
+    inputs = stepper[3:6] >> ir[:4]
+    truth_table_test(
+        inputs,
+        output,
+        (
+            ((0, 0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)),
+            ((1, 0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)),
+            ((0, 1, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)),
+            ((0, 0, 1, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)),
+            ((0, 0, 0, 1, 0, 0, 0), (0, 0, 0, 0, 0, 0)),
+            ((1, 0, 0, 1, 0, 0, 0), (0, 0, 0, 1, 0, 0)),
+            ((1, 0, 0, 1, 1, 0, 0), (0, 0, 0, 1, 0, 0)),
+            ((1, 0, 0, 1, 1, 1, 1), (0, 0, 0, 1, 0, 0)),
+            ((0, 1, 0, 1, 0, 0, 0), (0, 0, 0, 0, 1, 0)),
+            ((0, 1, 0, 1, 1, 0, 0), (1, 0, 0, 0, 1, 0)),
+            ((0, 1, 0, 1, 1, 1, 1), (1, 1, 1, 0, 1, 0)),
+            ((0, 0, 1, 1, 0, 0, 0), (0, 0, 0, 0, 0, 1)),
+            ((0, 0, 1, 1, 1, 0, 0), (0, 0, 0, 0, 0, 1)),
+            ((0, 0, 1, 1, 1, 1, 1), (0, 0, 0, 0, 0, 0)),
+        ),
+        draw=1,
+    )
+
+def test_non_alu(circuit):
+    with scope("StepperIn"):
+        stepper = bus(circuit_module.Stepper.N_OUTS - 1)
+    with scope("IrIn"):
+        ir = bus(8)
+    with scope("Flags"):
+        flags = bus(4)
+    output = stepper >> ir >> flags >> circuit_module.NonAluModule()
+    inputs = stepper[3:5] >> ir[:4]
+    truth_table_test(
+        inputs,
+        output[:4],
+        (
+            ((0, 0, 1, 0, 0, 0), (0, 0, 0, 0)),
+            ((1, 0, 1, 0, 0, 0), (0, 0, 0, 0)),
+            ((0, 1, 1, 0, 0, 0), (0, 0, 0, 0)),
+            
+            ((0, 0, 0, 0, 0, 0), (0, 0, 0, 0)),
+            ((1, 0, 0, 0, 0, 0), (1, 0, 0, 0)),
+            ((0, 1, 0, 0, 0, 0), (0, 1, 0, 0)),
+
+            ((0, 0, 0, 0, 0, 1), (0, 0, 0, 0)),
+            ((1, 0, 0, 0, 0, 1), (0, 0, 1, 0)),
+            ((0, 1, 0, 0, 0, 1), (0, 0, 0, 1)),
+        ),
+        draw=1,
+    )
+    truth_table_test(
+        stepper[3:6] >> flags >> ir,
+        output[:-1][-3:],
+        (
+            ((1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0,0), (1, 0, 0)),
+            ((0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0), (0, 1, 0)),
+            ((0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0), (0, 0, 0)),
+            ((0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0 ,0, 0), (0, 0, 0)),
+            ((0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0 ,0, 0), (0, 0, 1)),
+            ((0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0 ,1, 0), (0, 0, 1)),
+            ((0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0 ,1, 0), (0, 0, 0)),
+            ((0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0 ,1, 0), (0, 0, 0)),
+            ((0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0 ,1, 0), (0, 0, 0)),
+            ((0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0 ,1, 1), (0, 0, 1)),
+            ((0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0 ,1, 0), (0, 0, 1)),
+        ),
+        draw=1,
+    )
+
+def test_types(circuit):
+    a, b = Line("a") >> Line("b") >> circuit_module.with_type(("a",), "b")
+    assert a.is_type("b")
+    assert a.is_type(("a",))
+    assert not a.is_type("a")
+    assert not a.is_type(("b",))
+    assert b.is_type("b")
+    assert b.is_type(("a",))
+    assert not b.is_type("a")
+    assert not b.is_type(("b",))
+    assert a.is_types("b", ("a",))
+    assert a.is_types("b")
+    assert not a.is_types("b", "c")
+    assert not a.is_types("c")
+    assert len(Lines(a,b).typed("a")) == 0
+    assert set(Lines(a,b).typed("b")) == {a,b}
+    assert set(Lines(a,b).typed("b", ("a",))) == {a,b}
+    assert set(Lines(a,b).typed("b", ("c",))) == set()
+    assert set(Lines(a,b, Line("a")).typed("b")) == {a,b}
+    assert set(Lines(a,b).typed("b")) == {a,b}
+    a.add_type("c")
+    assert set(Lines(a,b).typed("b")) == {a,b}
+    assert set(Lines(a,b).typed("c")) == {a}
+    assert set(Lines(a,b).typed("c")) == {a}
+
+    d, e = Line("d") >> Line("e")
+    dt, et = d >> e >> circuit_module.with_type("d")
+    assert d is dt
+    assert e is et
+    
+    
+    
