@@ -1,6 +1,11 @@
-from graphviz import Digraph
 import collections
 from pprint import pprint
+
+import networkx
+from graphviz import Digraph
+
+from circuit import Circuit, CircuitState, Op
+from typing import Dict
 
 
 def draw(circuit, feed_dict, previous_state):
@@ -69,3 +74,14 @@ def draw(circuit, feed_dict, previous_state):
         import json
         json.dump({"linkDataArray": edges, "nodeDataArray": nodes}, fn)
 
+def to_networkx(circuit: Circuit, feed_dict: CircuitState) -> networkx.DiGraph:
+    net = networkx.DiGraph()
+    sources = set(circuit.sources).union(feed_dict.keys())
+    for source in sources:
+        for op in circuit.downstream_ops(source):
+            net.add_edge(id(source), id(op))
+    for op in circuit.ops:
+        for out_line in op.out_lines:
+            for out_op in circuit.downstream_ops(out_line):
+                net.add_edge(id(op), id(out_op))
+    return net

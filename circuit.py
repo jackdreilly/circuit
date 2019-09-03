@@ -7,11 +7,12 @@ import enum
 import itertools
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pprint import pprint
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from cached_property import cached_property
 from typing_extensions import Deque
+import parser
+
 
 BYTE_SIZE = 8
 
@@ -39,11 +40,11 @@ class Clock:
 
     @property
     def clk_value(self):
-        return self.timestep % 4 < 2
+        return self.timestep % 4 in (1, 2)
 
     @property
     def delay_clk_value(self):
-        return self.timestep % 4 in (1, 2)
+        return (self.timestep % 4) > 1
 
 
 class ScopeStack:
@@ -406,13 +407,16 @@ class BitGate(Gate):
         o = (c >> a >> nand) << "o"
         c_out = o >> b >> nand
         c_out >> c >> tie
-        return o
+        return o >> with_type("BIT")
 
 
 class ByteGate(Gate):
     def run(self, in_lines: Lines) -> Lines:
         s, input_lines = in_lines.pop()
-        return [input_line >> s >> bit for input_line in input_lines]
+        return [
+            input_line >> s >> bit >> with_type(("BYTE", i))
+            for i, input_line in enumerate(input_lines)
+        ]
 
 
 class Enabler(Gate):
@@ -424,7 +428,7 @@ class Enabler(Gate):
 class Register(Gate):
     def run(self, in_lines: Lines) -> Lines:
         s, e, input_lines = in_lines.split(1, 1)
-        return e >> (s >> input_lines >> byte) >> enabler
+        return e >> (s >> input_lines >> byte) >> enabler >> with_type("ENABLER")
 
 
 class Decoder(Gate):
@@ -448,18 +452,18 @@ class Tie(Gate):
 
 class RAM(Gate):
     MEM_SIZE = BYTE_SIZE
+
     def run(self, in_lines: Lines) -> Lines:
         s, e, sa, rest = in_lines.split(1, 1, 1)
         bus, mar_inputs = rest.split()
-        se = Line("Fixed-MAR-E", default_value=1, is_blocking=False)
         with scope("MAR"):
-            mar_outputs = sa >> se >> mar_inputs[:self.MEM_SIZE] >> register
+            mar_outputs = sa >> mar_inputs[-self.MEM_SIZE:] >> byte >> with_type("MAROUTPUT")
         with scope("Decoder"):
-            rows, cols = mar_outputs.split()
+            rows, cols = mar_outputs.pop(len(mar_outputs) // 2)
             with scope("RowDecoder"):
-                row_decoder = rows >> decoder
+                row_decoder = (rows >> decoder)[::-1]
             with scope("ColDecoder"):
-                col_decoder = cols >> decoder
+                col_decoder = (cols >> decoder)[::-1]
         with scope("Registers"):
             for row_index, row in enumerate(row_decoder):
                 with scope(f"row-{row_index}"):
@@ -471,7 +475,9 @@ class RAM(Gate):
                                     s_selector = row_col_selector >> s >> and_gate
                                 with scope("E"):
                                     e_selector = row_col_selector >> e >> and_gate
-                            s_selector >> e_selector >> bus >> register >> bus >> tie
+                            s_selector >> e_selector >> bus >> register >> with_type(
+                                ("ROW", row_index), ("COL", col_index), "RAMREGISTER"
+                            ) >> bus >> tie
 
 
 class RShift(Gate):
@@ -551,10 +557,10 @@ class Adder(Gate):
         carry_in, lines = in_lines.pop()
         sums = Lines()
         carry_out = carry_in
-        for aa, bb in lines.zip:
+        for aa, bb in list(lines.zip)[::-1]:
             sum_line, carry_out = aa >> bb >> carry_out >> sum_gate
             sums >>= sum_line
-        return carry_out >> Lines(sums)
+        return carry_out >> Lines(sums)[::-1]
 
     def rescope_outputs(self, outputs: Lines) -> Lines:
         with scope("Sums"):
@@ -597,26 +603,29 @@ class Comparator(Gate):
 
 
 class RegisterSelector(Gate):
+    output_scope = None
     def run(self, in_lines: Lines) -> Lines:
-        clk_e, clk_s, _, _, ir = in_lines.split(1, 1, 1, 3)
+        clk_e, clk_s, ea, eb, sb, _, _, ir = in_lines.split(1, 1, 1, 1, 1, 1, 3)
         a_lines, b_lines = ir.split()
         with scope("Enablers"):
             with scope("A"):
-                ra = Lines([clk_e >> line >> and_gate for line in a_lines >> decoder])
+                ra = Lines(
+                    [clk_e >> line >> ea >> and_gate for line in a_lines >> decoder]
+                )[::-1]
             with scope("B"):
-                rb = Lines([clk_e >> line >> and_gate for line in b_lines >> decoder])
+                rb = Lines(
+                    [clk_e >> line >> eb >> and_gate for line in b_lines >> decoder]
+                )[::-1]
             with scope("Combiner"):
-                re = Lines(
-                    a >> b >> or_gate >> with_type(("E", "R"), ("R", i))
-                    for i, (a, b) in enumerate((ra >> rb).zip)
-                )
+                re = Lines()
+                for i, (a, b) in enumerate((ra >> rb).zip):
+                    with scope(str(i)):
+                        re>>=a >> b >> or_gate >> with_type(("E", "R"), ("R", i), "CONTROL", "ENABLER")
         with scope("Selectors"):
-            rs = Lines(
-                [
-                    clk_s >> line >> and_gate >> with_type(("S", "R"), ("R", i))
-                    for i, line in enumerate(b_lines >> decoder)
-                ]
-            )
+            rs = Lines()
+            for i, line in enumerate((b_lines >> decoder)[::-1]):
+                with scope(str(i)):
+                    rs >>= clk_s >> line >> sb >> and_gate >> with_type(("S", "R"), ("R", i), "CONTROL", "SELECTOR")
         return re >> rs
 
 
@@ -625,33 +634,30 @@ class AluRunner(Gate):
         stepper, ir = in_lines.pop(Stepper.N_OUTS - 1)
         with scope("ALU"):
             alus = (
-                Lines(stepper[4] >> ir[0] >> ir[i] >> and_gate for i in range(1, 4))
+                Lines(stepper[4] >> ir[0] >> ir[i] >> and_gate >> with_type("CONTROL", "ENABLER", ("ALU", "OP"), ("ALU", i - 1)) for i in range(1, 4))
                 << "Alu"
-            ) >> with_type(("ALU", "OP"))
+            )
         outs = Lines()
-        with scope("Phase1"):
-            outs >>= (
+        outs >>= (
                 ir[0] >> stepper[3] >> and_gate >> with_type(("E", "RB"), ("S", "TMP"))
             )
-        with scope("Phase2"):
-            outs >>= (
-                ir[0] >> stepper[4] >> and_gate >> with_type(("E", "RA"), ("S", "ACC"))
-            )
-        with scope("Phase3"):
-            outs >>= (
-                ir[0]
-                >> stepper[5]
-                >> (ir[1:4] >> and_gate >> not_gate)
-                >> and_gate
-                >> with_type(("E", "ACC"), ("S", "RB"))
-            )
+        outs >>= (
+            ir[0] >> stepper[4] >> and_gate >> with_type(("E", "RA"), ("S", "ACC"), ("S", "FLAGS"))
+        )
+        outs >>= (
+            ir[0]
+            >> stepper[5]
+            >> (ir[1:4] >> and_gate >> not_gate)
+            >> and_gate
+            >> with_type(("E", "ACC"), ("S", "RB"))
+        )
         outs << "Phase"
         return alus >> outs
 
 
 class NonAluModule(Gate):
     def run(self, in_lines: Lines) -> Lines:
-        stepper, ir, flags = in_lines.split(Stepper.N_OUTS - 1, 4)
+        stepper, ir, flags = in_lines.split(Stepper.N_OUTS - 1, 8)
         not_0 = ir[0] >> not_gate
         with scope("Decoder"):
             decoded = Lines(not_0 >> dec >> and_gate for dec in ir[1:4] >> decoder)
@@ -727,12 +733,14 @@ class NonAluModule(Gate):
                     >> stepper[3]
                     >> and_gate
                     >> with_type(("E", "B1"), ("E", "IAR"), ("S", "MAR"), ("S", "ACC"))
+                    >> with_type(("INSTRUCTION", "J"))
                 )
                 outs >>= (
                     decoded.bit("101")
                     >> stepper[4]
                     >> and_gate
                     >> with_type(("E", "ACC"), ("S", "IAR"))
+                    >> with_type(("INSTRUCTION", "J"))
                 )
                 outs >>= (
                     decoded.bit("101")
@@ -746,6 +754,7 @@ class NonAluModule(Gate):
                     )
                     >> and_gate
                     >> with_type(("E", "RAM"), ("S", "IAR"))
+                    >> with_type(("INSTRUCTION", "J"))
                 )
         with scope("Clear"):
             outs >>= (
@@ -753,6 +762,21 @@ class NonAluModule(Gate):
                 >> stepper[3]
                 >> and_gate
                 >> with_type(("E", "B1"), ("S", "FLAGS"))
+            )
+        with scope("IO"):
+            outs >>= (
+                decoded.bit("111")
+                >> stepper[3]
+                >> ir[4]
+                >> and_gate
+                >> with_type(("E", "RB"), ("S", "IO"))
+            )
+            outs >>= (
+                decoded.bit("111")
+                >> stepper[4]
+                >> (ir[4] >> not_gate)
+                >> and_gate
+                >> with_type(("E", "IO"), ("S", "RB"))
             )
         return outs
 
@@ -777,16 +801,16 @@ class Alu(Gate):
         op, carry_in, lines = in_lines.split(3, 1)
         a, b = lines.split()
         with scope("OpDecoder"):
-            _, op_decoder = (op >> decoder).pop(1)
-        equal, a_larger, op_xorer = (a >> b >> comp).split(1, 1)
-
+            op_decoder = (op >> decoder)
+        equal, a_larger, op_cmp = (a >> b >> comp).split(1, 1)
+        op_xorer = lines >> xorer
         op_orer = lines >> orer
         op_ander = lines >> ander
         op_notter = lines >> notter
         lshifter_out, lshifter = (carry_in >> a >> lshift).pop()
         rshifter_out, rshifter = (carry_in >> a >> rshift).pop()
         adder_out, op_adder = (carry_in >> a >> b >> adder).pop()
-        ops = [op_xorer, op_orer, op_ander, op_notter, lshifter, rshifter, op_adder]
+        ops = [op_cmp, op_xorer, op_orer, op_ander, op_notter, lshifter, rshifter, op_adder]
         with scope("Enabler"):
             enabled_ops = [
                 decode_line >> gate >> enabler
@@ -813,64 +837,101 @@ class Alu(Gate):
 
 
 class ControlSection(Gate):
+    output_scope = None
+
     def run(self, in_lines: Lines) -> Lines:
-        clk, clk_s, clk_e, ir, flags = in_lines.split(1, 1, 1, 8)
-        stepper_ = clk >> stepper
+        clk, clk_s, clk_e, ir, flags, stepper_ = in_lines.split(1, 1, 1, 8, 4)
         outs = Lines()
-        with scope("IR"):
-            outs >>= stepper_[1] >> clk_s >> and_gate >> with_type(("S", "IR"))
+        phases = Lines()
+        with scope("Fetch"):
+            phases >>= stepper_[0] >> with_type(
+                ("E", "B1"), ("E", "IAR"), ("S", "MAR"), ("S", "ACC")
+            )
+            phases >>= stepper_[1] >> with_type(("E", "RAM"), ("S", "IR"))
+            phases >>= stepper_[2] >> with_type(("E", "ACC"), ("S", "IAR"))
         with scope("AluInstructions"):
-            alus, phases = (stepper_ >> ir >> AluRunner()).pop(3)
+            alus, phases_ = (stepper_ >> ir >> AluRunner()).pop(3)
+            phases >>= phases_
             outs >>= alus
         with scope("NonAluInstructions"):
             phases >>= stepper_ >> ir >> flags >> NonAluModule()
-        with scope("RegisterSelectors"):
-            outs >>= clk_e >> clk_s >> ir >> RegisterSelector()
         with scope("Selectors"):
-            outs >>= (
-                phases.typed(("S", type_tag))
-                >> or_gate
-                >> clk_s
-                >> and_gate
-                >> with_type(("S", type_tag))
-                for type_tag in ("MAR", "IAR", "ACC", "RAM", "TMP", "FLAGS")
-            )
+            for type_tag in ("MAR", "IAR", "ACC", "RAM", "TMP", "FLAGS", "IR", "IO"):
+                with scope(type_tag):
+                    outs >>= (
+                        phases.typed(("S", type_tag))
+                        >> or_gate
+                        >> clk_s
+                        >> and_gate
+                        >> with_type(("S", type_tag), "CONTROL", "SELECTOR")
+                    )
         with scope("Enablers"):
+            for type_tag in ("IAR", "RAM", "ACC", "IO"):
+                with scope(type_tag):
+                    outs >>= (
+                        phases.typed(("E", type_tag))
+                        >> or_gate
+                        >> clk_e
+                        >> and_gate
+                        >> with_type(("E", type_tag), "CONTROL", "ENABLER")
+                    )
+            type_tag = "B1"
+            with scope(type_tag):
+                outs >>= (
+                    phases.typed(("E", type_tag))
+                    >> or_gate
+                    >> with_type(("E", type_tag), "CONTROL", "ENABLER")
+                )
+        with scope("RegisterSelectors"):
             outs >>= (
-                phases.typed(("E", type_tag))
-                >> or_gate
-                >> clk_e
-                >> and_gate
-                >> with_type(("E", type_tag))
-                for type_tag in ("B1", "IAR", "RAM", "ACC")
+                clk_e
+                >> clk_s
+                >> (phases.typed(("E", "RA")) >> or_gate)
+                >> (phases.typed(("E", "RB")) >> or_gate)
+                >> (phases.typed(("S", "RB")) >> or_gate)
+                >> ir
+                >> RegisterSelector()
             )
         return outs
 
+class IoUnit(Gate):
+    def run(self, in_lines: Lines) -> Lines:
+        s, e, bus_ = in_lines.split(1,1)
+        with scope("In"):
+            io_in = bus() >> with_type("IO", ("IO", "IN"))
+            [line >> with_type(("IO", i)) for i, line in enumerate(io_in)]
+            e >> io_in >> enabler >> bus_ >> tie
+        with scope("Out"):
+            io_out = s >> bus_ >> byte >> with_type("IO", ("IO", "OUT"))
+            [line >> with_type(("IO", i)) for i, line in enumerate(io_out)]
+        return io_in >> io_out
 
 class Cpu(Gate):
     N_REGISTERS = 4
 
     def run(self, in_lines: Lines) -> Lines:
         clocks = in_lines
-        bus_ = bus()
+        bus_ = bus() >> with_type("MAINBUS")
+        stepper_ = clocks[0] >> stepper
         with scope("IR"):
             ir_s = Line("IrS", is_blocking=False)
-            ir = ir_s >> bus_ >> byte >> bus_ >> tie
+            ir = ir_s >> bus_ >> byte
+            [line >> with_type("IR", ("IR", i)) for i, line in enumerate(ir)]
         with scope("ControlFlags"):
-            flags = Lines(Line(s, is_blocking=False) for s in "CAEZ")
+            flags = Lines(Line(s, is_blocking=False) for s in "CAEZ") >> with_type("FLAG")
             carry_in = flags[0]
-        controllers = clocks >> ir >> flags >> ControlSection()
+        controllers = clocks >> ir >> flags >> stepper_ >> ControlSection()
         controllers.typed(("S", "IR")) >> ir_s >> tie
         with scope("IAR"):
             controllers.typed(("S", "IAR")) >> controllers.typed(
                 ("E", "IAR")
-            ) >> bus_ >> register >> bus_ >> tie
+            ) >> bus_ >> register >> with_type("IAR") >> bus_ >> tie
         with scope("Registers"):
             for i in range(self.N_REGISTERS):
                 with scope(str(i)):
                     s = controllers.typed(("S", "R"), ("R", i))
                     e = controllers.typed(("E", "R"), ("R", i))
-                    reg = s >> e >> bus_ >> register
+                    reg = s >> e >> bus_ >> register >> with_type(("CPUREG", i))
                     reg >> bus_ >> tie
         with scope("RAM"):
             controllers.typed(("S", "RAM")) >> controllers.typed(
@@ -897,7 +958,8 @@ class Cpu(Gate):
             controllers.typed(("S", "ACC")) >> controllers.typed(
                 ("E", "ACC")
             ) >> cs >> register >> bus_ >> tie
-        return None
+        io_lines = controllers.typed(("S", "IO")) >> controllers.typed(("E", "IO")) >> bus_ >> IoUnit()
+        return io_lines
 
 
 class Stepper(Gate):
@@ -929,7 +991,7 @@ class Stepper(Gate):
                         ms[(i + 1) * 2] >> (ms[(i + 2) * 2] >> not_gate) >> and_gate
                     )
         steps[-1] >> reset >> tie
-        return steps[:-1]
+        return steps[:-1] >> with_type("STEPPER")
 
 
 controller = ControlSection()
@@ -969,6 +1031,7 @@ FeedDict = Dict[Line, bool]
 
 Simulation = Dict[Line, bool]
 CircuitState = Simulation
+
 
 class TieOp:
     def __init__(self, to_line: Line):
@@ -1046,8 +1109,9 @@ def constant_op(line: Line, value: bool) -> Op:
 def bus(n_inputs=None) -> Lines:
     with scope("bus"):
         return Lines(
-            Line(str(i), is_blocking=False) for i in range(n_inputs or BYTE_SIZE)
-        ) >> with_type("BUS")
+            Line(str(i), is_blocking=False) >> with_type("BUS", i)
+            for i in range(n_inputs or BYTE_SIZE)
+        )
 
 
 class keydefaultdict(collections.defaultdict):
@@ -1072,14 +1136,20 @@ def simulate(
     previous_state = keydefaultdict(lambda line: line.default_value, previous_state)
     previous_state.update(feed_dict)
     while True:
-        queue: Deque[Op] = collections.deque(
-            [op for source in sources for op in circuit.downstream_ops(source)]
-            + [constant_op(line, value) for line, value in feed_dict.items()]
-        )
+        queue = collections.deque()
         visited = set()
         changed = []
         stable = True
         visited_lines = set(feed_dict.keys()).union(sources)
+        for line, value in feed_dict.items():
+            queue.append(constant_op(line, value))
+        for source in sources:
+            for op in circuit.downstream_ops(source):
+                if all(
+                    in_line in visited_lines or not in_line.is_blocking
+                    for in_line in op.in_lines
+                ):
+                    queue.append(op)
         while queue:
             op = queue.popleft()
             if op in visited:
@@ -1098,7 +1168,12 @@ def simulate(
             output_states = op.fn(previous_state)
             for line, value in output_states.items():
                 visited_lines.add(line)
-                queue.extend(circuit.downstream_ops(line))
+                for op in circuit.downstream_ops(line):
+                    if all(
+                        in_line in visited_lines or not in_line.is_blocking
+                        for in_line in op.in_lines
+                    ):
+                        queue.appendleft(op)
                 if line in feed_dict:
                     continue
                 old_value = previous_state[line]
@@ -1106,7 +1181,6 @@ def simulate(
                 if value != old_value:
                     changed.append((line, value, old_value, op))
                 previous_state[line] = value
-        # pprint(changed)
         if stable:
             if draw:
                 import graph_tools
@@ -1130,3 +1204,27 @@ class TypedOp(Gate):
 
 def with_type(*line_types) -> Op:
     return TypedOp(line_types)
+
+class Computer:
+    def __init__(self, circuit):
+        self.circuit = circuit
+        with scope("BUS"):
+            self.bus = bus()
+        
+
+def bootloader_program_txt():
+    return """
+    DATA 0  14 ;
+    DATA 1  1  ;
+    DATA 2  20 ;
+    IN   3     ;
+    ST   0  3  ;
+    ADD  1  0  ;
+    CMP  2  0  ;
+    JE  14     ;
+    JMP   6    ;
+    """
+
+
+def bootloader_program():
+    return parser.parse(bootloader_program_txt())
