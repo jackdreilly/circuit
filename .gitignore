@@ -7,3 +7,4 @@ test-output/
 data.json
 go.js
 gojs.single.html
+*.log
