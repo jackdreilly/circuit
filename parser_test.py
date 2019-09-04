@@ -52,8 +52,8 @@ SHL 3 0;
 LD 1 3;
 DATA 2;
 JMPR 0 1;
-JMP;
-CLF;
+JMP;  # asdfasd 
+CLF;  # asdfasdasdfa
 JC;
 JCA;
 JCEZ;

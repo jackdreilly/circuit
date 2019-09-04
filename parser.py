@@ -2,6 +2,13 @@ from typing import List, Optional, Tuple
 
 
 def parse(s) -> List[List[int]]:
+    comments = []
+    for l in s.split('\n'):
+        c = l.find("#")
+        if c >= 0:
+            l = l[:c]
+        comments.append(l)
+    s = '\n'.join(comments)
     return [line for group in [parse_line(line.strip()) for line in s.strip().split(";") if line] for line in group if line]
 
 

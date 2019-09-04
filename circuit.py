@@ -1223,15 +1223,16 @@ class Computer:
 
 def bootloader_program_txt():
     return """
-    DATA 0  14 ;
-    DATA 1  1  ;
-    DATA 2  27 ;
-    IN   3     ;
-    ST   0  3  ;
-    ADD  1  0  ;
-    CMP  2  0  ;
-    JE  14     ;
-    JMP   6    ;
+    IN   2     ;  # Load length of input program in Reg 2
+    DATA 0  14 ;  # Load input program (14) starting register address into Reg 0
+    ADD  0  2  ;  # Add length of input program to starting location to give Input loop stopping condition.
+    DATA 1  1  ;  # Store "1" in register 1 (used for incrementing loop var).
+    IN   3     ;  # START LOOP(Line 6) - Read next line of input program from input.
+    ST   0  3  ;  # Store program line in next available RAM address
+    ADD  1  0  ;  # Increment next available RAM address
+    CMP  2  0  ;  # Compare next RAM address w/ the stopping condition
+    JE   14    ;  # If Equal flag set, then we've read the whole program, jump to program.
+    JMP  6     ;  # END_LOOP(Line 6) - Go and read more of the program.
     """
 
 

@@ -714,8 +714,8 @@ def run_cpu(medium_circuit):
     output = clock.lines >> cpu
     iars = tag_outputs(circuit, ["BIT"], "Cpu/IAR")
     irs = tag_outputs(circuit, ["BIT"], "Cpu/IR")
-    n_rows = 2 ** (ram.MEM_SIZE // 2)
-    n_cols = 2 ** ((ram.MEM_SIZE + 1) // 2)
+    n_rows = 8
+    n_cols = 8
     rams = {(row,col): tag_outputs(circuit, ["BIT"], f'reg-{row}-{col}') for row in range(n_rows) for col in range(n_cols)}
     regs = {i: tag_outputs(circuit, ["BIT"], f"Cpu/Registers/{i}") for i in range(cpu.N_REGISTERS)}
     bus = tag_outputs(circuit, ["MAINBUS"])
@@ -739,16 +739,27 @@ def run_cpu(medium_circuit):
     bl_length = 6
 
     my_program = parser.parse("""
-    XOR  0 0;
-    DATA 1 1;
-    DATA 2 2;
-    ADD  0 2;
-    XOR  0 0;
-    ADD  1 0;
-    XOR  1 1;
-    ADD  2 1;
-    OUT  1  ;
-    JMP  19 ;
+    DATA 0 43; # Starting register to store output in RAM
+    DATA 1 42; # Location of next register to write to
+    ST   1  0; # Store the next output register value in RAM
+    XOR  0  0; # Zero Register 0
+    DATA 1  1; # Store "1" in 1
+    XOR  2  2; # START LOOP(Loc 22) Zero Register 2
+    ADD  0  2; # Reg 2 <- 0 + (Reg 0)
+    ADD  1  2; # Reg 2 <- (Reg 0) + (Reg 1)  [r2 = r0 + r1]
+    XOR  0  0; # Zero Reg 0
+    ADD  1  0; # Reg 0 <- 0 + (Reg 1)   [r0 = r1]
+    XOR  1  1; # Zero Reg 1
+    ADD  2  1; # Reg 1 <- 0 + Reg 2   [r1 = (old r0) + (old r1)]
+    OUT  1   ; # Put Result on OUTPUT
+    DATA 3 42; # Load where to find next register address into 3
+    LD   3  3; # Load the actual next register address into 3
+    ST   3  1; # Store Reg 1 in the next output register
+    DATA 2  1; # Set Reg 2 to 1
+    ADD  2  3; # Add 1 to next register address
+    DATA 2 42; # Load Address where to store next output address into Reg 2
+    ST   2  3; # Replace next register address w/ same value + 1
+    JMP  22  ; # END LOOP(Loc 22)
     """)
     print("MY PROGRAM")
     pprint(my_program)
@@ -778,7 +789,9 @@ def run_cpu(medium_circuit):
     io_lines = tag_outputs(circuit, ("IO", ("IO", "IN")))
     out_lines = tag_outputs(circuit, ("IO", ("IO", "OUT")))
     def input_dict(step):
-        step-=3
+        if step == 0:
+            return {line: v for line, v in zip(io_lines, list(map(int, '{0:010b}'.format(len(my_program))[2:])))}
+        step-=4
         if step < 0:
             return {}
         step //= bl_length
