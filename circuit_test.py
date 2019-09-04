@@ -6,10 +6,35 @@ from pytest import fixture, skip
 
 import circuit as circuit_module
 import graph_tools
-from circuit import (Line, Lines, adder, alu, and_gate, bit, bus, bus1, byte,
-                     comp, comp_gate, cpu, decoder, inputs, lshift, nand,
-                     new_circuit, not_gate, or_gate, ram, register, rshift,
-                     scope, simulate, stepper, xor_gate, zero_gate)
+from circuit import (
+    Line,
+    Lines,
+    adder,
+    alu,
+    and_gate,
+    bit,
+    bus,
+    bus1,
+    byte,
+    comp,
+    comp_gate,
+    cpu,
+    decoder,
+    inputs,
+    lshift,
+    nand,
+    new_circuit,
+    not_gate,
+    or_gate,
+    ram,
+    register,
+    rshift,
+    scope,
+    simulate,
+    stepper,
+    xor_gate,
+    zero_gate,
+)
 
 
 def test_line(circuit):
@@ -82,6 +107,7 @@ def small_circuit():
         yield circuit
     ram.MEM_SIZE = old
 
+
 @fixture
 def medium_circuit():
     old = ram.MEM_SIZE
@@ -137,7 +163,9 @@ def truth_table_test(lines: Lines, test_output, truth_table, draw=0):
         pprint(previous_state)
         previous_state = simulate(feed_dict, previous_state=previous_state)
         if draw and False:
-            graph_tools.draw(circuit_module.default_circuit(), feed_dict, previous_state)
+            graph_tools.draw(
+                circuit_module.default_circuit(), feed_dict, previous_state
+            )
         print(
             i,
             expectations,
@@ -321,7 +349,7 @@ def test_ram(small_circuit):
     def viz(skip=False):
         graph_tools.draw(circuit, feed_dict, previous_state)
         # skip()
-    
+
     # S set
     setv(s, 1)
     # MAR set
@@ -708,7 +736,9 @@ def test_bus1(circuit):
         draw=1,
     )
 
-def run_cpu(medium_circuit):
+
+@pytest.mark.skip()
+def test_cpu(medium_circuit):
     circuit = medium_circuit
     clock = circuit_module.Clock()
     output = clock.lines >> cpu
@@ -716,112 +746,145 @@ def run_cpu(medium_circuit):
     irs = tag_outputs(circuit, ["BIT"], "Cpu/IR")
     n_rows = 8
     n_cols = 8
-    rams = {(row,col): tag_outputs(circuit, ["BIT"], f'reg-{row}-{col}') for row in range(n_rows) for col in range(n_cols)}
-    regs = {i: tag_outputs(circuit, ["BIT"], f"Cpu/Registers/{i}") for i in range(cpu.N_REGISTERS)}
+    rams = {
+        (row, col): tag_outputs(circuit, ["BIT"], f"reg-{row}-{col}")
+        for row in range(n_rows)
+        for col in range(n_cols)
+    }
+    regs = {
+        i: tag_outputs(circuit, ["BIT"], f"Cpu/Registers/{i}")
+        for i in range(cpu.N_REGISTERS)
+    }
     bus = tag_outputs(circuit, ["MAINBUS"])
     stepper = tag_outputs(circuit, ["STEPPER"])
     selectors = tag_outputs(circuit, ["SELECTOR", "CONTROL"])
     enablers = tag_outputs(circuit, ["ENABLER", "CONTROL"])
     mars = tag_outputs(circuit, ["MAROUTPUT"])
-    acc = tag_outputs(circuit, ["BIT"],"ACC" )
+    acc = tag_outputs(circuit, ["BIT"], "ACC")
     flags = tag_outputs(circuit, ["FLAG"])
     print(flags)
     assert len(flags) == 4
     bootloader_program = circuit_module.bootloader_program()
-    program_line = bootloader_program[0]
     simulation = {}
+
     def set_lines(lines, vals, prev=None):
         if prev is None:
             prev = {}
-        prev.update({l: v for l,v in zip(lines, vals)})
+        prev.update({l: v for l, v in zip(lines, vals)})
         return prev
 
     bl_length = 6
 
-    my_program = parser.parse("""
-    DATA 0 43; # Starting register to store output in RAM
-    DATA 1 42; # Location of next register to write to
-    ST   1  0; # Store the next output register value in RAM
-    XOR  0  0; # Zero Register 0
-    DATA 1  1; # Store "1" in 1
-    XOR  2  2; # START LOOP(Loc 22) Zero Register 2
-    ADD  0  2; # Reg 2 <- 0 + (Reg 0)
-    ADD  1  2; # Reg 2 <- (Reg 0) + (Reg 1)  [r2 = r0 + r1]
-    XOR  0  0; # Zero Reg 0
-    ADD  1  0; # Reg 0 <- 0 + (Reg 1)   [r0 = r1]
-    XOR  1  1; # Zero Reg 1
-    ADD  2  1; # Reg 1 <- 0 + Reg 2   [r1 = (old r0) + (old r1)]
-    OUT  1   ; # Put Result on OUTPUT
-    DATA 3 42; # Load where to find next register address into 3
-    LD   3  3; # Load the actual next register address into 3
-    ST   3  1; # Store Reg 1 in the next output register
-    DATA 2  1; # Set Reg 2 to 1
-    ADD  2  3; # Add 1 to next register address
-    DATA 2 42; # Load Address where to store next output address into Reg 2
-    ST   2  3; # Replace next register address w/ same value + 1
-    JMP  22  ; # END LOOP(Loc 22)
-    """)
+    # Stores the Fibonacci sequence in RAM
+    my_program = parser.parse(
+        """
+        DATA 0 43; # Starting register to store output in RAM
+        DATA 1 42; # Location of next register to write to
+        ST   1  0; # Store the next output register value in RAM
+        XOR  0  0; # Zero Register 0
+        DATA 1  1; # Store "1" in 1
+        XOR  2  2; # START LOOP(Loc 22) Zero Register 2
+        ADD  0  2; # Reg 2 <- 0 + (Reg 0)
+        ADD  1  2; # Reg 2 <- (Reg 0) + (Reg 1)  [r2 = r0 + r1]
+        XOR  0  0; # Zero Reg 0
+        ADD  1  0; # Reg 0 <- 0 + (Reg 1)   [r0 = r1]
+        XOR  1  1; # Zero Reg 1
+        ADD  2  1; # Reg 1 <- 0 + Reg 2   [r1 = (old r0) + (old r1)]
+        OUT  1   ; # Put Result on OUTPUT
+        DATA 3 42; # Load where to find next register address into 3
+        LD   3  3; # Load the actual next register address into 3
+        ST   3  1; # Store Reg 1 in the next output register
+        DATA 2  1; # Set Reg 2 to 1
+        ADD  2  3; # Add 1 to next register address
+        DATA 2 42; # Load Address where to store next output address into Reg 2
+        ST   2  3; # Replace next register address w/ same value + 1
+        JMP  22  ; # END LOOP(Loc 22)
+    """
+    )
     print("MY PROGRAM")
     pprint(my_program)
     print("BL PROGRAM")
     pprint(bootloader_program)
-    
-    
+
     def bootload(program):
         program_iter = iter(program)
         d = {}
         for row in range(n_rows):
             for col in range(n_cols):
                 try:
-                    d = set_lines(tag_outputs(circuit, ["BIT"], f'reg-{row}-{col}'), next(program_iter), d)
+                    d = set_lines(
+                        tag_outputs(circuit, ["BIT"], f"reg-{row}-{col}"),
+                        next(program_iter),
+                        d,
+                    )
                 except StopIteration:
                     return d
+        return d
 
     fixed_dict = bootload(bootloader_program)
-    def vals(lines, keys=False,show_all=False,decimal=False):
+
+    def vals(lines, keys=False, show_all=False, decimal=False):
         if show_all:
             return [(line.name, int(simulation[line])) for line in lines]
         if keys:
-            return [(line.name, int(simulation[line])) for line in lines if simulation[line]]
+            return [
+                (line.name, int(simulation[line])) for line in lines if simulation[line]
+            ]
         if decimal:
-            return int(''.join(map(str,[int(simulation[line]) for line in lines])), 2)
-        return '{0:02x}'.format(int(''.join(map(str,[int(simulation[line]) for line in lines])), 2))
+            return int("".join(map(str, [int(simulation[line]) for line in lines])), 2)
+        return "{0:02x}".format(
+            int("".join(map(str, [int(simulation[line]) for line in lines])), 2)
+        )
+
     io_lines = tag_outputs(circuit, ("IO", ("IO", "IN")))
     out_lines = tag_outputs(circuit, ("IO", ("IO", "OUT")))
+
     def input_dict(step):
         if step == 0:
-            return {line: v for line, v in zip(io_lines, list(map(int, '{0:010b}'.format(len(my_program))[2:])))}
-        step-=4
+            return {
+                line: v
+                for line, v in zip(
+                    io_lines, list(map(int, "{0:010b}".format(len(my_program))[2:]))
+                )
+            }
+        step -= 4
         if step < 0:
             return {}
         step //= bl_length
         if step >= len(my_program):
             return {}
         return {line: v for line, v in zip(io_lines, my_program[step])}
+
     for i in range(24 * 1000):
         feed_dict = clock.step()
         feed_dict.update(fixed_dict)
         feed_dict.update(input_dict(i // 24))
         simulation.update(simulate(feed_dict, circuit, simulation))
-        if (not (i + 1) % 24):
-            print('CYC', i % 4, 'RND', i // 24, "STEP", (i % 24) // 4)
+        if not (i + 1) % 24:
+            print("CYC", i % 4, "RND", i // 24, "STEP", (i % 24) // 4)
             # print("CLOCK", vals(clock.lines))
             print("IRS", vals(irs), parser.unparse(vals(irs, decimal=True)))
             print("BUS", vals(bus))
             print("IAR", vals(iars))
             print("MARS", vals(mars))
             print("RAMS")
-            print('\n'.join(' '.join(vals(rams[(row,col)]) for col in range(n_cols)) for row in range(n_rows)))
+            print(
+                "\n".join(
+                    " ".join(vals(rams[(row, col)]) for col in range(n_cols))
+                    for row in range(n_rows)
+                )
+            )
             print("REGS")
-            print(' '.join(vals(regs[i]) for i in range(len(regs))))
-            print("FLAGS", vals(flags,keys=True))
+            print(" ".join(vals(regs[i]) for i in range(len(regs))))
+            print("FLAGS", vals(flags, keys=True))
             print("STEPPER", vals(stepper))
             print("ACC", vals(acc))
-            print("ENABLERS", vals(enablers,keys=True))
+            print("ENABLERS", vals(enablers, keys=True))
             print("SELECTORS", vals(selectors, keys=True))
             print("IO-IN", vals(io_lines), parser.unparse(vals(io_lines, decimal=True)))
             print("IO-OU", vals(out_lines))
     graph_tools.draw(circuit, feed_dict, simulation)
+
 
 def test_stepper_2(circuit):
     clock = circuit_module.Clock()
@@ -1112,8 +1175,10 @@ def test_data_controller(circuit):
 def alu_tags(*enabled_tags):
     return [[("ALU", "OP"), ("ALU", tag)] for tag in enabled_tags]
 
+
 def alu_s5():
     return [[("S", "FLAGS")]]
+
 
 def test_add_controller(circuit):
     alus = []

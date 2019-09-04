@@ -8,8 +8,7 @@ import parser
 import random
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import (Any, Callable, Dict, Iterable, List, Optional, Set, Tuple,
-                    Union)
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from cached_property import cached_property
 from typing_extensions import Deque
@@ -457,7 +456,9 @@ class RAM(Gate):
         s, e, sa, rest = in_lines.split(1, 1, 1)
         bus, mar_inputs = rest.split()
         with scope("MAR"):
-            mar_outputs = sa >> mar_inputs[-self.MEM_SIZE:] >> byte >> with_type("MAROUTPUT")
+            mar_outputs = (
+                sa >> mar_inputs[-self.MEM_SIZE :] >> byte >> with_type("MAROUTPUT")
+            )
         with scope("Decoder"):
             rows, cols = mar_outputs.pop(len(mar_outputs) // 2)
             with scope("RowDecoder"):
@@ -604,6 +605,7 @@ class Comparator(Gate):
 
 class RegisterSelector(Gate):
     output_scope = None
+
     def run(self, in_lines: Lines) -> Lines:
         clk_e, clk_s, ea, eb, sb, _, _, ir = in_lines.split(1, 1, 1, 1, 1, 1, 3)
         a_lines, b_lines = ir.split()
@@ -620,12 +622,23 @@ class RegisterSelector(Gate):
                 re = Lines()
                 for i, (a, b) in enumerate((ra >> rb).zip):
                     with scope(str(i)):
-                        re>>=a >> b >> or_gate >> with_type(("E", "R"), ("R", i), "CONTROL", "ENABLER")
+                        re >>= (
+                            a
+                            >> b
+                            >> or_gate
+                            >> with_type(("E", "R"), ("R", i), "CONTROL", "ENABLER")
+                        )
         with scope("Selectors"):
             rs = Lines()
             for i, line in enumerate((b_lines >> decoder)[::-1]):
                 with scope(str(i)):
-                    rs >>= clk_s >> line >> sb >> and_gate >> with_type(("S", "R"), ("R", i), "CONTROL", "SELECTOR")
+                    rs >>= (
+                        clk_s
+                        >> line
+                        >> sb
+                        >> and_gate
+                        >> with_type(("S", "R"), ("R", i), "CONTROL", "SELECTOR")
+                    )
         return re >> rs
 
 
@@ -634,15 +647,23 @@ class AluRunner(Gate):
         stepper, ir = in_lines.pop(Stepper.N_OUTS - 1)
         with scope("ALU"):
             alus = (
-                Lines(stepper[4] >> ir[0] >> ir[i] >> and_gate >> with_type("CONTROL", "ENABLER", ("ALU", "OP"), ("ALU", i - 1)) for i in range(1, 4))
+                Lines(
+                    stepper[4]
+                    >> ir[0]
+                    >> ir[i]
+                    >> and_gate
+                    >> with_type("CONTROL", "ENABLER", ("ALU", "OP"), ("ALU", i - 1))
+                    for i in range(1, 4)
+                )
                 << "Alu"
             )
         outs = Lines()
+        outs >>= ir[0] >> stepper[3] >> and_gate >> with_type(("E", "RB"), ("S", "TMP"))
         outs >>= (
-                ir[0] >> stepper[3] >> and_gate >> with_type(("E", "RB"), ("S", "TMP"))
-            )
-        outs >>= (
-            ir[0] >> stepper[4] >> and_gate >> with_type(("E", "RA"), ("S", "ACC"), ("S", "FLAGS"))
+            ir[0]
+            >> stepper[4]
+            >> and_gate
+            >> with_type(("E", "RA"), ("S", "ACC"), ("S", "FLAGS"))
         )
         outs >>= (
             ir[0]
@@ -801,7 +822,7 @@ class Alu(Gate):
         op, carry_in, lines = in_lines.split(3, 1)
         a, b = lines.split()
         with scope("OpDecoder"):
-            op_decoder = (op >> decoder)
+            op_decoder = op >> decoder
         equal, a_larger, op_cmp = (a >> b >> comp).split(1, 1)
         op_xorer = lines >> xorer
         op_orer = lines >> orer
@@ -810,7 +831,16 @@ class Alu(Gate):
         lshifter_out, lshifter = (carry_in >> a >> lshift).pop()
         rshifter_out, rshifter = (carry_in >> a >> rshift).pop()
         adder_out, op_adder = (carry_in >> a >> b >> adder).pop()
-        ops = [op_cmp, op_xorer, op_orer, op_ander, op_notter, lshifter, rshifter, op_adder]
+        ops = [
+            op_cmp,
+            op_xorer,
+            op_orer,
+            op_ander,
+            op_notter,
+            lshifter,
+            rshifter,
+            op_adder,
+        ]
         with scope("Enabler"):
             enabled_ops = [
                 decode_line >> gate >> enabler
@@ -894,9 +924,10 @@ class ControlSection(Gate):
             )
         return outs
 
+
 class IoUnit(Gate):
     def run(self, in_lines: Lines) -> Lines:
-        s, e, bus_ = in_lines.split(1,1)
+        s, e, bus_ = in_lines.split(1, 1)
         with scope("In"):
             io_in = bus() >> with_type("IO", ("IO", "IN"))
             [line >> with_type(("IO", i)) for i, line in enumerate(io_in)]
@@ -905,6 +936,7 @@ class IoUnit(Gate):
             io_out = s >> bus_ >> byte >> with_type("IO", ("IO", "OUT"))
             [line >> with_type(("IO", i)) for i, line in enumerate(io_out)]
         return io_in >> io_out
+
 
 class Cpu(Gate):
     N_REGISTERS = 4
@@ -918,7 +950,9 @@ class Cpu(Gate):
             ir = ir_s >> bus_ >> byte
             [line >> with_type("IR", ("IR", i)) for i, line in enumerate(ir)]
         with scope("ControlFlags"):
-            flags = Lines(Line(s, is_blocking=False) for s in "CAEZ") >> with_type("FLAG")
+            flags = Lines(Line(s, is_blocking=False) for s in "CAEZ") >> with_type(
+                "FLAG"
+            )
             carry_in = flags[0]
         controllers = clocks >> ir >> flags >> stepper_ >> ControlSection()
         controllers.typed(("S", "IR")) >> ir_s >> tie
@@ -958,7 +992,12 @@ class Cpu(Gate):
             controllers.typed(("S", "ACC")) >> controllers.typed(
                 ("E", "ACC")
             ) >> cs >> register >> bus_ >> tie
-        io_lines = controllers.typed(("S", "IO")) >> controllers.typed(("E", "IO")) >> bus_ >> IoUnit()
+        io_lines = (
+            controllers.typed(("S", "IO"))
+            >> controllers.typed(("E", "IO"))
+            >> bus_
+            >> IoUnit()
+        )
         return io_lines
 
 
@@ -1118,7 +1157,7 @@ class Circuit:
         ids = {id(line) for line in lines}
         if ids == self._feed_ids:
             return
-        self.__dict__.pop('op_order', None)
+        self.__dict__.pop("op_order", None)
         self._feed_lines = lines
         self._feed_ids = ids
 
@@ -1174,7 +1213,7 @@ class keydefaultdict(collections.defaultdict):
 def simulate(
     feed_dict: FeedDict,
     circuit: Optional[Circuit] = None,
-    previous_state: Optional[CircuitState] = None
+    previous_state: Optional[CircuitState] = None,
 ) -> Simulation:
     circuit = circuit_or_default(circuit)
     circuit.set_feed(Lines(feed_dict))
@@ -1185,7 +1224,7 @@ def simulate(
     ops = circuit.op_order
     while ops:
         stable = True
-        stable_count=0
+        stable_count = 0
         for op in ops:
             for line, value in op.fn(previous_state).items():
                 if line in feed_dict:
@@ -1193,7 +1232,7 @@ def simulate(
                 stable &= previous_state[line] == value
                 previous_state[line] = value
             if stable:
-                stable_count+=1
+                stable_count += 1
         ops = ops[stable_count:]
     return dict(previous_state)
 
@@ -1214,12 +1253,13 @@ class TypedOp(Gate):
 def with_type(*line_types) -> Op:
     return TypedOp(line_types)
 
+
 class Computer:
     def __init__(self, circuit):
         self.circuit = circuit
         with scope("BUS"):
             self.bus = bus()
-        
+
 
 def bootloader_program_txt():
     return """
@@ -1233,7 +1273,7 @@ def bootloader_program_txt():
     CMP  2  0  ;  # Compare next RAM address w/ the stopping condition
     JE   14    ;  # If Equal flag set, then we've read the whole program, jump to program.
     JMP  6     ;  # END_LOOP(Line 6) - Go and read more of the program.
-    """
+"""
 
 
 def bootloader_program():

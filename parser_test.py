@@ -10,8 +10,8 @@ ADD   1 2;
 ST 0 2;
 SHL   3 0;
 LD 1   3;
-DATA 2 5  ;   
-JMPR   1;  
+DATA 2 5  ;     # asdfasd 
+JMPR   1;    # asdfasd 
 JMP   6;  
 CLF   ;
 JC 7;
@@ -52,8 +52,8 @@ SHL 3 0;
 LD 1 3;
 DATA 2;
 JMPR 0 1;
-JMP;  # asdfasd 
-CLF;  # asdfasdasdfa
+JMP;
+CLF;
 JC;
 JCA;
 JCEZ;
