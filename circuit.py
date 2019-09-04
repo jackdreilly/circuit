@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import abc
 import collections
-import random
 import enum
 import itertools
+import parser
+import random
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import (Any, Callable, Dict, Iterable, List, Optional, Set, Tuple,
+                    Union)
 
 from cached_property import cached_property
 from typing_extensions import Deque
-import parser
-
 
 BYTE_SIZE = 8
 
@@ -1039,23 +1039,28 @@ class TieOp:
         self._from_lines = set()
         self.name = "/".join([to_line.name, "tie"])
 
-    @property
+    @cached_property
     def in_lines(self) -> Lines:
         return Lines(self.from_lines)
 
-    @property
+    @cached_property
     def out_lines(self) -> Lines:
         return Lines(self.to_line)
 
     def add_from_line(self, from_line: Line):
+        self.clear_cache()
         self._from_lines.add(from_line)
+
+    def clear_cache(self):
+        for tag in ("in_lines", "out_lines", "from_lines"):
+            self.__dict__.pop(tag, None)
 
     def fn(self, in_values: CircuitState) -> CircuitState:
         return {
             self.to_line: any(in_values[from_line] for from_line in self.from_lines)
         }
 
-    @property
+    @cached_property
     def from_lines(self):
         return set(self._from_lines)
 
@@ -1065,21 +1070,29 @@ class Circuit:
         self.inputs_to_ops: Dict[Line, Set[Op]] = collections.defaultdict(set)
         self.outputs_to_ops: Dict[Line, Set[Op]] = collections.defaultdict(set)
         self.tie_ops: Dict[Line, Op] = keydefaultdict(TieOp)
+        self._feed_ids = set()
+        self._feed_lines = Lines()
 
     def push_op(self, op: Op):
+        self.clear_cache()
         for input_line in op.in_lines:
             self.inputs_to_ops[input_line].add(op)
         for output_line in op.out_lines:
             self.outputs_to_ops[output_line].add(op)
 
     def tie(self, from_line: Line, to_line: Line):
+        self.clear_cache()
         self.tie_ops[to_line].add_from_line(from_line)
         self.push_op(self.tie_ops[to_line])
+
+    def clear_cache(self):
+        for tag in ("sources", "lines", "ops"):
+            self.__dict__.pop(tag, None)
 
     def downstream_ops(self, line: Line) -> Set[Op]:
         return self.inputs_to_ops[line]
 
-    @property
+    @cached_property
     def sources(self) -> Lines:
         return Lines(
             line
@@ -1088,7 +1101,7 @@ class Circuit:
             or (line not in self.tie_ops and line not in self.outputs_to_ops)
         )
 
-    @property
+    @cached_property
     def lines(self) -> Lines:
         return Lines(
             line
@@ -1097,13 +1110,48 @@ class Circuit:
             for line in line_group
         )
 
-    @property
+    @cached_property
     def ops(self) -> List[Op]:
         return list({op for ops in self.inputs_to_ops.values() for op in ops})
 
+    def set_feed(self, lines: Lines):
+        ids = {id(line) for line in lines}
+        if ids == self._feed_ids:
+            return
+        self.__dict__.pop('op_order', None)
+        self._feed_lines = lines
+        self._feed_ids = ids
 
-def constant_op(line: Line, value: bool) -> Op:
-    return Op.create(None, line, lambda a: {line: value})
+    @cached_property
+    def op_order(self):
+        order = []
+        queue = collections.deque()
+        visited = set()
+        visited_lines = set(self._feed_lines >> self.sources)
+        for source in visited_lines:
+            for op in self.downstream_ops(source):
+                if all(
+                    in_line in visited_lines or not in_line.is_blocking
+                    for in_line in op.in_lines
+                ):
+                    queue.append(op)
+        while queue:
+            op = queue.popleft()
+            if op in visited:
+                continue
+            order.append(op)
+            visited.add(op)
+            for line in op.out_lines:
+                visited_lines.add(line)
+                for op in self.downstream_ops(line):
+                    if op in visited:
+                        continue
+                    if all(
+                        in_line in visited_lines or not in_line.is_blocking
+                        for in_line in op.in_lines
+                    ):
+                        queue.appendleft(op)
+        return order
 
 
 def bus(n_inputs=None) -> Lines:
@@ -1126,67 +1174,28 @@ class keydefaultdict(collections.defaultdict):
 def simulate(
     feed_dict: FeedDict,
     circuit: Optional[Circuit] = None,
-    previous_state: Optional[CircuitState] = None,
-    draw=False,
+    previous_state: Optional[CircuitState] = None
 ) -> Simulation:
     circuit = circuit_or_default(circuit)
-    sources = circuit.sources
+    circuit.set_feed(Lines(feed_dict))
     if not previous_state:
         previous_state = {}
     previous_state = keydefaultdict(lambda line: line.default_value, previous_state)
     previous_state.update(feed_dict)
-    while True:
-        queue = collections.deque()
-        visited = set()
-        changed = []
+    ops = circuit.op_order
+    while ops:
         stable = True
-        visited_lines = set(feed_dict.keys()).union(sources)
-        for line, value in feed_dict.items():
-            queue.append(constant_op(line, value))
-        for source in sources:
-            for op in circuit.downstream_ops(source):
-                if all(
-                    in_line in visited_lines or not in_line.is_blocking
-                    for in_line in op.in_lines
-                ):
-                    queue.append(op)
-        while queue:
-            op = queue.popleft()
-            if op in visited:
-                continue
-            fn_input = {}
-            skip = False
-            for in_line in op.in_lines:
-                if in_line not in visited_lines and in_line.is_blocking:
-                    skip = True
-                    break
-                fn_input[in_line] = previous_state[in_line]
-            if skip:
-                queue.append(op)
-                continue
-            visited.add(op)
-            output_states = op.fn(previous_state)
-            for line, value in output_states.items():
-                visited_lines.add(line)
-                for op in circuit.downstream_ops(line):
-                    if all(
-                        in_line in visited_lines or not in_line.is_blocking
-                        for in_line in op.in_lines
-                    ):
-                        queue.appendleft(op)
+        stable_count=0
+        for op in ops:
+            for line, value in op.fn(previous_state).items():
                 if line in feed_dict:
                     continue
-                old_value = previous_state[line]
-                stable &= old_value == value
-                if value != old_value:
-                    changed.append((line, value, old_value, op))
+                stable &= previous_state[line] == value
                 previous_state[line] = value
-        if stable:
-            if draw:
-                import graph_tools
-
-                graph_tools.draw(circuit, dict(feed_dict), dict(previous_state))
-            return dict(previous_state)
+            if stable:
+                stable_count+=1
+        ops = ops[stable_count:]
+    return dict(previous_state)
 
 
 class TypedOp(Gate):
@@ -1216,7 +1225,7 @@ def bootloader_program_txt():
     return """
     DATA 0  14 ;
     DATA 1  1  ;
-    DATA 2  20 ;
+    DATA 2  27 ;
     IN   3     ;
     ST   0  3  ;
     ADD  1  0  ;

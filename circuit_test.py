@@ -1,40 +1,15 @@
 import parser
 from pprint import pprint
 from typing import Any, Iterable, List
-
+import pytest
 from pytest import fixture, skip
 
 import circuit as circuit_module
 import graph_tools
-from circuit import (
-    Line,
-    Lines,
-    adder,
-    alu,
-    and_gate,
-    bit,
-    bus,
-    bus1,
-    byte,
-    comp,
-    comp_gate,
-    cpu,
-    decoder,
-    inputs,
-    lshift,
-    nand,
-    new_circuit,
-    not_gate,
-    or_gate,
-    ram,
-    register,
-    rshift,
-    scope,
-    simulate,
-    stepper,
-    xor_gate,
-    zero_gate,
-)
+from circuit import (Line, Lines, adder, alu, and_gate, bit, bus, bus1, byte,
+                     comp, comp_gate, cpu, decoder, inputs, lshift, nand,
+                     new_circuit, not_gate, or_gate, ram, register, rshift,
+                     scope, simulate, stepper, xor_gate, zero_gate)
 
 
 def test_line(circuit):
@@ -110,7 +85,7 @@ def small_circuit():
 @fixture
 def medium_circuit():
     old = ram.MEM_SIZE
-    ram.MEM_SIZE = 5
+    ram.MEM_SIZE = 6
     with new_circuit() as circuit:
         yield circuit
     ram.MEM_SIZE = old
@@ -160,7 +135,9 @@ def truth_table_test(lines: Lines, test_output, truth_table, draw=0):
         feed_dict = {k: v for k, v in feed_dict.items() if v is not None}
         pprint(feed_dict)
         pprint(previous_state)
-        previous_state = simulate(feed_dict, previous_state=previous_state, draw=draw and False)
+        previous_state = simulate(feed_dict, previous_state=previous_state)
+        if draw and False:
+            graph_tools.draw(circuit_module.default_circuit(), feed_dict, previous_state)
         print(
             i,
             expectations,
@@ -234,6 +211,8 @@ def test_bit(circuit):
             ((1, 0), 1),
             ((1, 1), 1),
             ((1, 0), 1),
+            ((0, 0), 1),
+            ((0, 1), []),
             ((0, 1), 0),
             ((1, 0), 0),
         ),
@@ -257,6 +236,7 @@ def test_byte(circuit):
             ((1, "25"), "25"),
             ((0, "25"), "25"),
             ((0, "42"), "25"),
+            ((1, "42"), []),
             ((1, "42"), "42"),
             ((1, "0"), "0"),
             ((1, "251"), "251"),
@@ -729,9 +709,7 @@ def test_bus1(circuit):
         draw=1,
     )
 
-
-def test_cpu(medium_circuit):
-    skip()
+def run_cpu(medium_circuit):
     circuit = medium_circuit
     clock = circuit_module.Clock()
     output = clock.lines >> cpu
@@ -762,10 +740,16 @@ def test_cpu(medium_circuit):
     bl_length = 6
 
     my_program = parser.parse("""
-    DATA 0 1;
-    ADD  0 0;
-    OUT  0;
-    JMP 16;
+    XOR  0 0;
+    DATA 1 1;
+    DATA 2 2;
+    ADD  0 2;
+    XOR  0 0;
+    ADD  1 0;
+    XOR  1 1;
+    ADD  2 1;
+    OUT  1  ;
+    JMP  19 ;
     """)
     print("MY PROGRAM")
     pprint(my_program)
@@ -784,12 +768,14 @@ def test_cpu(medium_circuit):
                     return d
 
     fixed_dict = bootload(bootloader_program)
-    def vals(lines, keys=False,show_all=False,):
+    def vals(lines, keys=False,show_all=False,decimal=False):
         if show_all:
             return [(line.name, int(simulation[line])) for line in lines]
         if keys:
             return [(line.name, int(simulation[line])) for line in lines if simulation[line]]
-        return int(''.join(map(str,[int(simulation[line]) for line in lines])), 2)
+        if decimal:
+            return int(''.join(map(str,[int(simulation[line]) for line in lines])), 2)
+        return '{0:02x}'.format(int(''.join(map(str,[int(simulation[line]) for line in lines])), 2))
     io_lines = tag_outputs(circuit, ("IO", ("IO", "IN")))
     out_lines = tag_outputs(circuit, ("IO", ("IO", "OUT")))
     def input_dict(step):
@@ -805,66 +791,25 @@ def test_cpu(medium_circuit):
         feed_dict.update(fixed_dict)
         feed_dict.update(input_dict(i // 24))
         simulation.update(simulate(feed_dict, circuit, simulation))
-        print('CYC', i % 4, 'RND', i // 24, "STEP", (i % 24) // 4)
-        # print("CLOCK", vals(clock.lines))
-        print("IRS", vals(irs), parser.unparse(vals(irs)))
-        print("BUS", vals(bus))
-        print("IAR", vals(iars))
-        print("MARS", vals(mars))
-        print("RAMS")
-        import numpy as np
-        pprint(np.array([
-            [vals(rams[(row,col)]) for col in range(n_cols)]
-            for row in range(n_rows)
-        ]))
-        print("REGS")
-        pprint([vals(regs[i]) for i in range(len(regs))])
-        print("FLAGS", vals(flags,keys=True))
-        print("STEPPER", vals(stepper))
-        print("ACC", vals(acc))
-        print("ENABLERS", vals(enablers,keys=True))
-        print("SELECTORS", vals(selectors, keys=True))
-        print("IO-IN", vals(io_lines), parser.unparse(vals(io_lines)))
-        print("IO-OU", vals(out_lines))
+        if (not (i + 1) % 24):
+            print('CYC', i % 4, 'RND', i // 24, "STEP", (i % 24) // 4)
+            # print("CLOCK", vals(clock.lines))
+            print("IRS", vals(irs), parser.unparse(vals(irs, decimal=True)))
+            print("BUS", vals(bus))
+            print("IAR", vals(iars))
+            print("MARS", vals(mars))
+            print("RAMS")
+            print('\n'.join(' '.join(vals(rams[(row,col)]) for col in range(n_cols)) for row in range(n_rows)))
+            print("REGS")
+            print(' '.join(vals(regs[i]) for i in range(len(regs))))
+            print("FLAGS", vals(flags,keys=True))
+            print("STEPPER", vals(stepper))
+            print("ACC", vals(acc))
+            print("ENABLERS", vals(enablers,keys=True))
+            print("SELECTORS", vals(selectors, keys=True))
+            print("IO-IN", vals(io_lines), parser.unparse(vals(io_lines, decimal=True)))
+            print("IO-OU", vals(out_lines))
     graph_tools.draw(circuit, feed_dict, simulation)
-
-
-def test_stepper(circuit):
-    inputs = Line("Clock")
-    output = inputs >> stepper
-    truth_table_test(
-        inputs,
-        output,
-        (
-            ((1,), (1, 0, 0, 0, 0, 0)),
-            ((0,), (1, 0, 0, 0, 0, 0)),
-            ((0,), (1, 0, 0, 0, 0, 0)),
-            ((1,), (0, 1, 0, 0, 0, 0)),
-            ((0,), (0, 1, 0, 0, 0, 0)),
-            ((1,), (0, 0, 1, 0, 0, 0)),
-            ((0,), (0, 0, 1, 0, 0, 0)),
-            ((1,), (0, 0, 0, 1, 0, 0)),
-            ((0,), (0, 0, 0, 1, 0, 0)),
-            ((1,), (0, 0, 0, 0, 1, 0)),
-            ((0,), (0, 0, 0, 0, 1, 0)),
-            ((1,), (0, 0, 0, 0, 0, 1)),
-            ((0,), (0, 0, 0, 0, 0, 1)),
-            ((1,), (1, 0, 0, 0, 0, 0)),
-            ((0,), (1, 0, 0, 0, 0, 0)),
-            ((1,), (0, 1, 0, 0, 0, 0)),
-            ((0,), (0, 1, 0, 0, 0, 0)),
-            ((1,), (0, 0, 1, 0, 0, 0)),
-            ((0,), (0, 0, 1, 0, 0, 0)),
-            ((1,), (0, 0, 0, 1, 0, 0)),
-            ((0,), (0, 0, 0, 1, 0, 0)),
-            ((1,), (0, 0, 0, 0, 1, 0)),
-            ((0,), (0, 0, 0, 0, 1, 0)),
-            ((1,), (0, 0, 0, 0, 0, 1)),
-            ((0,), (0, 0, 0, 0, 0, 1)),
-        ),
-        draw=1,
-    )
-
 
 def test_stepper_2(circuit):
     clock = circuit_module.Clock()
