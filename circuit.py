@@ -666,7 +666,7 @@ class AluRunner(Gate):
                     >> and_gate
                     >> with_type(("ALU", i))
                 )
-                >> with_type("ENABLER", ("ALU", "OP"))
+                >> with_type("ENABLER", "CONTROL", ("ALU", "OP"))
                 << "Alu"
             )
             print("ALUS", list(alus))
