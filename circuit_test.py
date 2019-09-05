@@ -162,7 +162,7 @@ def truth_table_test(lines: Lines, test_output, truth_table, draw=0):
         pprint(feed_dict)
         pprint(previous_state)
         previous_state = simulate(feed_dict, previous_state=previous_state)
-        if draw and False:
+        if draw:
             graph_tools.draw(
                 circuit_module.default_circuit(), feed_dict, previous_state
             )

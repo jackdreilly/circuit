@@ -9,6 +9,7 @@ from typing import Dict
 
 
 def draw(circuit, feed_dict, previous_state):
+    previous_state = collections.defaultdict(bool, previous_state)
     ops = list({op for line in previous_state for op in circuit.downstream_ops(line)})
     nodes = []
     edges = []

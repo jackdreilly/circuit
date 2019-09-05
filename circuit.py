@@ -81,6 +81,16 @@ def scope(value: str) -> ScopeStack:
     ScopeStack.pop()
 
 
+def scoped(value: str) -> Lines:
+    ScopeStack.push(value)
+    return Lines()
+
+
+def unscoped() -> Lines:
+    ScopeStack.pop()
+    return Lines()
+
+
 @contextmanager
 def scope_pop() -> ScopeStack:
     value = ScopeStack.pop()
@@ -140,9 +150,31 @@ def _bit(s: str) -> int:
     return 2 ** len(s) - int(s, 2) - 1
 
 
+def chunker(seq, size):
+    return (seq[pos : pos + size] for pos in range(0, len(seq), size))
+
+
 @dataclass(frozen=True, init=False)
 class Lines:
     lines: Tuple[Line]
+
+    def map(self, fn, chunk_size=1) -> Lines:
+        with scope("Map"):
+            return Lines(
+                [
+                    scoped(str(i)) >> fn(i, l) >> with_type(("MAP", i)) >> unscoped()
+                    for i, l in enumerate(chunker(self, chunk_size))
+                ]
+            )
+
+    def zipped(self, fn) -> Lines:
+        with scope("Zip"):
+            return Lines(
+                [
+                    scoped(str(i)) >> fn(i, a, b) >> with_type(("ZIP", i)) >> unscoped()
+                    for i, (a, b) in enumerate(self.zip)
+                ]
+            )
 
     def bit(self, b: str) -> Line:
         return self[_bit(b)]
@@ -372,14 +404,37 @@ def _tie(from_line: Line, to_line: Line):
     default_circuit().tie(from_line, to_line)
 
 
+class SplitGate(Gate):
+    split_op: Gate
+
+    def run(self, in_lines: Lines) -> Lines:
+        return in_lines.zipped(lambda i, a, b: a >> b >> self.split_op)
+
+
+class MapGate(Gate):
+    map_op: Gate
+
+    def run(self, in_lines: Lines) -> Lines:
+        return in_lines.map(lambda i, l: l >> self.map_op)
+
+
+class PassGate(Gate):
+    def run(self, in_lines: Lines) -> Lines:
+        return _if(in_lines, True)
+
+
 class NandGate(Gate):
     def run(self, in_lines: Lines) -> Lines:
         return Lines(_if(in_lines, False))
 
 
 class NotGate(Gate):
-    def run(self, in_lines: Lines) -> Lines:
-        return [in_line >> in_line >> nand for in_line in in_lines]
+    def run(self, in_line: Lines) -> Lines:
+        return in_line >> in_line >> nand
+
+
+class Notter(MapGate):
+    map_op = NotGate()
 
 
 class AndGate(Gate):
@@ -402,7 +457,7 @@ class BitGate(Gate):
         i, s = in_lines
         a = i >> s >> nand
         b = a >> s >> nand
-        c = Line("cline", default_value=1, is_blocking=False) << "c"
+        c = Line("c", default_value=1, is_blocking=False)
         o = (c >> a >> nand) << "o"
         c_out = o >> b >> nand
         c_out >> c >> tie
@@ -412,16 +467,13 @@ class BitGate(Gate):
 class ByteGate(Gate):
     def run(self, in_lines: Lines) -> Lines:
         s, input_lines = in_lines.pop()
-        return [
-            input_line >> s >> bit >> with_type(("BYTE", i))
-            for i, input_line in enumerate(input_lines)
-        ]
+        return input_lines.map(lambda i, l: l >> s >> bit)
 
 
 class Enabler(Gate):
     def run(self, in_lines: Lines) -> Lines:
         e, input_lines = in_lines.pop()
-        return [input_line >> e >> and_gate for input_line in input_lines]
+        return input_lines.map(lambda i, l: l >> e >> and_gate)
 
 
 class Register(Gate):
@@ -432,12 +484,9 @@ class Register(Gate):
 
 class Decoder(Gate):
     def run(self, in_lines: Lines) -> Lines:
-        nots = in_lines >> not_gate
-        with scope("Products"):
-            return [
-                Lines(inputs) >> and_gate
-                for inputs in itertools.product(*zip(in_lines, nots))
-            ]
+        return Lines(itertools.product(*zip(in_lines, in_lines >> not_gate))).map(
+            lambda i, a: a >> and_gate, chunk_size=len(in_lines)
+        )
 
 
 class Tie(Gate):
@@ -466,19 +515,21 @@ class RAM(Gate):
             with scope("ColDecoder"):
                 col_decoder = (cols >> decoder)[::-1]
         with scope("Registers"):
-            for row_index, row in enumerate(row_decoder):
-                with scope(f"row-{row_index}"):
-                    for col_index, col in enumerate(col_decoder):
-                        with scope(f"reg-{row_index}-{col_index}"):
-                            with scope("Selector"):
-                                row_col_selector = row >> col >> and_gate
-                                with scope("S"):
-                                    s_selector = row_col_selector >> s >> and_gate
-                                with scope("E"):
-                                    e_selector = row_col_selector >> e >> and_gate
-                            s_selector >> e_selector >> bus >> register >> with_type(
-                                ("ROW", row_index), ("COL", col_index), "RAMREGISTER"
-                            ) >> bus >> tie
+
+            def mapper(i, rc):
+                rcs = rc >> and_gate
+                return (
+                    (rcs >> s >> and_gate)
+                    >> (rcs >> e >> and_gate)
+                    >> bus
+                    >> register
+                    >> bus
+                    >> tie
+                )
+
+            return Lines(itertools.product(row_decoder, col_decoder)).map(
+                mapper, chunk_size=2
+            )
 
 
 class RShift(Gate):
@@ -493,27 +544,9 @@ class LShift(Gate):
         return (shift_out >> lines >> shift_in) >> passer
 
 
-class SplitGate(Gate):
-    split_op: Gate
-
-    def run(self, in_lines: Lines) -> Lines:
-        return [aa >> bb >> self.split_op for aa, bb in in_lines.zip]
-
-
-class MapGate(Gate):
-    map_op: Gate
-
-    def run(self, in_lines: Lines) -> Lines:
-        return [line >> self.map_op for line in in_lines]
-
-
-class PassGate(Gate):
-    def run(self, in_lines: Lines) -> Lines:
-        return _if(in_lines, True)
-
-
 nand = NandGate()
-not_gate = NotGate()
+notter = Notter()
+not_gate = notter
 and_gate = AndGate()
 or_gate = OrGate()
 xor_gate = XorGate()
@@ -526,10 +559,6 @@ class Passer(MapGate):
 
 class Ander(SplitGate):
     split_op = and_gate
-
-
-class Notter(MapGate):
-    map_op = not_gate
 
 
 class Orer(SplitGate):
@@ -594,13 +623,12 @@ class Comparator(Gate):
             equal_so_far, a_larger, c = (
                 aa >> bb >> equal_so_far >> a_larger >> comp_gate
             )
-            c << "c"
-            cs = cs >> c
-        with scope("OutComparisons"):
-            rescope(cs)
-        a_larger << "A-Is-Larger"
-        equal_so_far << "Is-Equal"
-        return equal_so_far >> a_larger >> cs
+            cs >>= c
+        return (
+            (equal_so_far << "Is-Equal")
+            >> (a_larger << "A-Is-Larger")
+            >> (scoped("OutComparisons") >> cs << "c" >> unscoped())
+        )
 
 
 class RegisterSelector(Gate):
@@ -609,37 +637,21 @@ class RegisterSelector(Gate):
     def run(self, in_lines: Lines) -> Lines:
         clk_e, clk_s, ea, eb, sb, _, _, ir = in_lines.split(1, 1, 1, 1, 1, 1, 3)
         a_lines, b_lines = ir.split()
+        a_decoder, b_decoder = (a_lines >> decoder)[::-1], (b_lines >> decoder)[::-1]
         with scope("Enablers"):
             with scope("A"):
-                ra = Lines(
-                    [clk_e >> line >> ea >> and_gate for line in a_lines >> decoder]
-                )[::-1]
+                ra = a_decoder.map(lambda i, l: clk_e >> l >> ea >> and_gate)
             with scope("B"):
-                rb = Lines(
-                    [clk_e >> line >> eb >> and_gate for line in b_lines >> decoder]
-                )[::-1]
+                rb = b_decoder.map(lambda i, l: clk_e >> l >> eb >> and_gate)
             with scope("Combiner"):
-                re = Lines()
-                for i, (a, b) in enumerate((ra >> rb).zip):
-                    with scope(str(i)):
-                        re >>= (
-                            a
-                            >> b
-                            >> or_gate
-                            >> with_type(("E", "R"), ("R", i), "CONTROL", "ENABLER")
-                        )
+                re = (ra >> rb).zipped(
+                    lambda i, a, b: a >> b >> or_gate >> with_type(("R", i))
+                ) >> with_type(("E", "R"), "ENABLER")
         with scope("Selectors"):
-            rs = Lines()
-            for i, line in enumerate((b_lines >> decoder)[::-1]):
-                with scope(str(i)):
-                    rs >>= (
-                        clk_s
-                        >> line
-                        >> sb
-                        >> and_gate
-                        >> with_type(("S", "R"), ("R", i), "CONTROL", "SELECTOR")
-                    )
-        return re >> rs
+            rs = b_decoder.map(
+                lambda i, l: clk_s >> l >> sb >> and_gate >> with_type(("R", i))
+            ) >> with_type(("S", "R"), "SELECTOR")
+        return re >> rs >> with_type("CONTROL")
 
 
 class AluRunner(Gate):
@@ -647,16 +659,17 @@ class AluRunner(Gate):
         stepper, ir = in_lines.pop(Stepper.N_OUTS - 1)
         with scope("ALU"):
             alus = (
-                Lines(
-                    stepper[4]
+                ir[1:4].map(
+                    lambda i, l: stepper[4]
                     >> ir[0]
-                    >> ir[i]
+                    >> l
                     >> and_gate
-                    >> with_type("CONTROL", "ENABLER", ("ALU", "OP"), ("ALU", i - 1))
-                    for i in range(1, 4)
+                    >> with_type(("ALU", i))
                 )
+                >> with_type("ENABLER", ("ALU", "OP"))
                 << "Alu"
             )
+            print("ALUS", list(alus))
         outs = Lines()
         outs >>= ir[0] >> stepper[3] >> and_gate >> with_type(("E", "RB"), ("S", "TMP"))
         outs >>= (
@@ -681,7 +694,7 @@ class NonAluModule(Gate):
         stepper, ir, flags = in_lines.split(Stepper.N_OUTS - 1, 8)
         not_0 = ir[0] >> not_gate
         with scope("Decoder"):
-            decoded = Lines(not_0 >> dec >> and_gate for dec in ir[1:4] >> decoder)
+            decoded = (ir[1:4] >> decoder).map(lambda i,l: not_0 >> l >> and_gate)
         with scope("Load"):
             outs = (
                 decoded.bit("000")
@@ -766,13 +779,7 @@ class NonAluModule(Gate):
                 outs >>= (
                     decoded.bit("101")
                     >> stepper[5]
-                    >> (
-                        Lines(
-                            flag >> ir_flag >> and_gate
-                            for flag, ir_flag in (flags >> ir[4:]).zip
-                        )
-                        >> or_gate
-                    )
+                    >> ((flags >> ir[4:]).zipped(lambda i, f, ir_l: f >> ir_l >> and_gate) >> or_gate)
                     >> and_gate
                     >> with_type(("E", "RAM"), ("S", "IAR"))
                     >> with_type(("INSTRUCTION", "J"))
@@ -812,9 +819,7 @@ class Bus1(Gate):
         s, lines = in_lines.pop()
         and_lines, or_line = lines.split(-1)
         not_s = s >> not_gate
-        return Lines([line >> not_s >> and_gate for line in and_lines]) >> (
-            or_line >> s >> or_gate
-        )
+        return and_lines.map(lambda i,l: l >> not_s >> and_gate) >> (or_line >> s >> or_gate)
 
 
 class Alu(Gate):
