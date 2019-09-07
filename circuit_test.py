@@ -747,7 +747,7 @@ def test_cpu(medium_circuit):
     n_rows = 8
     n_cols = 8
     rams = {
-        (row, col): tag_outputs(circuit, ["BIT"], f"reg-{row}-{col}")
+        (row, col): tag_outputs(circuit, ["BIT"], f"RAMRegister-{row * n_cols + col}/")
         for row in range(n_rows)
         for col in range(n_cols)
     }
@@ -762,8 +762,6 @@ def test_cpu(medium_circuit):
     mars = tag_outputs(circuit, ["MAROUTPUT"])
     acc = tag_outputs(circuit, ["BIT"], "ACC")
     flags = tag_outputs(circuit, ["FLAG"])
-    print(flags)
-    assert len(flags) == 4
     bootloader_program = circuit_module.bootloader_program()
     simulation = {}
 
@@ -807,34 +805,26 @@ def test_cpu(medium_circuit):
     pprint(bootloader_program)
 
     def bootload(program):
-        program_iter = iter(program)
-        d = {}
-        for row in range(n_rows):
-            for col in range(n_cols):
-                try:
-                    d = set_lines(
-                        tag_outputs(circuit, ["BIT"], f"reg-{row}-{col}"),
-                        next(program_iter),
-                        d,
-                    )
-                except StopIteration:
-                    return d
-        return d
+        return {
+            k: v
+            for i, program_line in enumerate(program)
+            for k,v in set_lines(rams[(i // n_cols, i % n_cols)], program_line).items()
+        }
 
     fixed_dict = bootload(bootloader_program)
 
     def vals(lines, keys=False, show_all=False, decimal=False):
+        values = [int(simulation[line]) for line in lines]
         if show_all:
-            return [(line.name, int(simulation[line])) for line in lines]
+            return [(line.name, value) for line, value in zip(lines, values)]
         if keys:
-            return [
-                (line.name, int(simulation[line])) for line in lines if simulation[line]
-            ]
+            return {line.name for line, value in zip(lines, values) if value}
+        if len(lines) != 8:
+            decimal = True
+        d_value =int(''.join(map(str,values)), 2)
         if decimal:
-            return int("".join(map(str, [int(simulation[line]) for line in lines])), 2)
-        return "{0:02x}".format(
-            int("".join(map(str, [int(simulation[line]) for line in lines])), 2)
-        )
+            return d_value
+        return '{0:02x}'.format(d_value)
 
     io_lines = tag_outputs(circuit, ("IO", ("IO", "IN")))
     out_lines = tag_outputs(circuit, ("IO", ("IO", "OUT")))
@@ -860,7 +850,7 @@ def test_cpu(medium_circuit):
         feed_dict.update(fixed_dict)
         feed_dict.update(input_dict(i // 24))
         simulation.update(simulate(feed_dict, circuit, simulation))
-        if not (i + 1) % 24:
+        if not (i + 1) % 24 or True:
             print("CYC", i % 4, "RND", i // 24, "STEP", (i % 24) // 4)
             # print("CLOCK", vals(clock.lines))
             print("IRS", vals(irs), parser.unparse(vals(irs, decimal=True)))

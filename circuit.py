@@ -515,17 +515,17 @@ class RAM(Gate):
             with scope("ColDecoder"):
                 col_decoder = (cols >> decoder)[::-1]
         with scope("Registers"):
-
             def mapper(i, rc):
-                rcs = rc >> and_gate
-                return (
-                    (rcs >> s >> and_gate)
-                    >> (rcs >> e >> and_gate)
-                    >> bus
-                    >> register
-                    >> bus
-                    >> tie
-                )
+                with scope(f"RAMRegister-{i}"):
+                    rcs = rc >> and_gate
+                    return (
+                        (rcs >> s >> and_gate)
+                        >> (rcs >> e >> and_gate)
+                        >> bus
+                        >> register
+                        >> bus
+                        >> tie
+                    )
 
             return Lines(itertools.product(row_decoder, col_decoder)).map(
                 mapper, chunk_size=2
@@ -669,7 +669,6 @@ class AluRunner(Gate):
                 >> with_type("ENABLER", "CONTROL", ("ALU", "OP"))
                 << "Alu"
             )
-            print("ALUS", list(alus))
         outs = Lines()
         outs >>= ir[0] >> stepper[3] >> and_gate >> with_type(("E", "RB"), ("S", "TMP"))
         outs >>= (
@@ -934,12 +933,10 @@ class IoUnit(Gate):
     def run(self, in_lines: Lines) -> Lines:
         s, e, bus_ = in_lines.split(1, 1)
         with scope("In"):
-            io_in = bus() >> with_type("IO", ("IO", "IN"))
-            [line >> with_type(("IO", i)) for i, line in enumerate(io_in)]
+            io_in = (bus() >> with_type("IO", ("IO", "IN"))).map(lambda i,l: l >> with_type(("IO", i)))
             e >> io_in >> enabler >> bus_ >> tie
         with scope("Out"):
-            io_out = s >> bus_ >> byte >> with_type("IO", ("IO", "OUT"))
-            [line >> with_type(("IO", i)) for i, line in enumerate(io_out)]
+            io_out = (s >> bus_ >> byte >> with_type("IO", ("IO", "OUT"))).map(lambda i,l: l >> with_type(("IO", i)))
         return io_in >> io_out
 
 
@@ -952,8 +949,7 @@ class Cpu(Gate):
         stepper_ = clocks[0] >> stepper
         with scope("IR"):
             ir_s = Line("IrS", is_blocking=False)
-            ir = ir_s >> bus_ >> byte
-            [line >> with_type("IR", ("IR", i)) for i, line in enumerate(ir)]
+            ir = (ir_s >> bus_ >> byte).map(lambda i,l: l >> with_type(("IR", i), "IR"))
         with scope("ControlFlags"):
             flags = Lines(Line(s, is_blocking=False) for s in "CAEZ") >> with_type(
                 "FLAG"
