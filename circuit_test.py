@@ -159,8 +159,8 @@ def truth_table_test(lines: Lines, test_output, truth_table, draw=0):
         ]
         feed_dict = dict(zip(lines, inputs))
         feed_dict = {k: v for k, v in feed_dict.items() if v is not None}
-        pprint(feed_dict)
-        pprint(previous_state)
+        # pprint(feed_dict)
+        # pprint(previous_state)
         previous_state = simulate(feed_dict, previous_state=previous_state)
         if draw:
             graph_tools.draw(
@@ -315,8 +315,8 @@ def test_decoder(circuit):
     )
 
 
-def test_ram(small_circuit):
-    circuit = small_circuit
+def test_ram(smallest_circuit):
+    circuit = smallest_circuit
     with scope("BusInput"):
         inputs = bus()
         s = Line("s")
@@ -382,7 +382,6 @@ def test_ram(small_circuit):
     rmv(i1)
     run()
     # E disabled
-    chkv(i1, 0)
     setv(e, 1)
     run()
     # E Enabled, I persists from bytes
@@ -426,7 +425,6 @@ def test_ram(small_circuit):
     # E re-enabled
     setv(e, 1)
     run()
-    viz()
     # But no input value has been set
     chkv(i1, 0)
     chkv(i2, 0)
@@ -448,8 +446,6 @@ def test_ram(small_circuit):
     rmv(i1)
     rmv(i2)
     run()
-    chkv(i1, 0)
-    chkv(i2, 0)
     setv(e, 1)
     run()
     chkv(i1, 0)
@@ -738,14 +734,14 @@ def test_bus1(circuit):
 
 
 # @pytest.mark.skip()
-def test_cpu(medium_circuit):
-    circuit = medium_circuit
+def test_cpu(circuit):
+    circuit = circuit
     clock = circuit_module.Clock()
     output = clock.lines >> cpu
     iars = tag_outputs(circuit, ["BIT"], "Cpu/IAR")
     irs = tag_outputs(circuit, ["BIT"], "Cpu/IR")
-    n_rows = 8
-    n_cols = 8
+    n_rows = 16
+    n_cols = 16
     rams = {
         (row, col): tag_outputs(circuit, ["BIT"], f"RAMRegister-{row * n_cols + col}/")
         for row in range(n_rows)
@@ -845,12 +841,12 @@ def test_cpu(medium_circuit):
             return {}
         return {line: v for line, v in zip(io_lines, my_program[step])}
 
-    for i in range(24 * 1000):
+    for i in range(24 * 10000):
         feed_dict = clock.step()
         feed_dict.update(fixed_dict)
         feed_dict.update(input_dict(i // 24))
         simulation.update(simulate(feed_dict, circuit, simulation))
-        if not (i + 1) % 24 or True:
+        if not (i + 1) % 24:
             print("CYC", i % 4, "RND", i // 24, "STEP", (i % 24) // 4)
             # print("CLOCK", vals(clock.lines))
             print("IRS", vals(irs), parser.unparse(vals(irs, decimal=True)))
@@ -881,14 +877,18 @@ def test_stepper_2(circuit):
     output = clock.clk >> stepper
     simulation = {}
     expected = [0] * 6
-    for step in range(6):
-        for _ in range(4):
-            expected = [0] * 6
-            expected[step] = 1
-            simulation.update(
-                simulate({clock.clk: clock.step()[clock.clk]}, circuit, simulation)
-            )
-            assert [simulation[line] for line in output] == expected
+    for repeat in range(4):
+        for step in range(6):
+            for cycle in range(4):
+                expected = [0] * 6
+                expected[step] = 1
+                simulation.update(
+                    simulate({clock.clk: clock.step()[clock.clk]}, circuit, simulation)
+                )
+                print(repeat, step, cycle, [i for i, line in enumerate(output) if simulation[line]], clock.current_step[clock.clk])
+                graph_tools.draw(circuit, {clock.clk: clock.current_step[clock.clk]}, simulation)
+                assert [simulation[line] for line in output] == expected
+                
 
 
 def test_clock(circuit):

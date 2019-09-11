@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import abc
+import queue as queue_module
 import collections
 import json
 import enum
 import itertools
+from pprint import pprint
 import parser
 import random
 from contextlib import contextmanager
@@ -529,6 +531,7 @@ class RAM(Gate):
             with scope("ColDecoder"):
                 col_decoder = (cols >> decoder)[::-1]
         with scope("Registers"):
+
             def mapper(i, rc):
                 with scope(f"RAMRegister-{i}"):
                     rcs = rc >> and_gate
@@ -707,7 +710,7 @@ class NonAluModule(Gate):
         stepper, ir, flags = in_lines.split(Stepper.N_OUTS - 1, 8)
         not_0 = ir[0] >> not_gate
         with scope("Decoder"):
-            decoded = (ir[1:4] >> decoder).map(lambda i,l: not_0 >> l >> and_gate)
+            decoded = (ir[1:4] >> decoder).map(lambda i, l: not_0 >> l >> and_gate)
         with scope("Load"):
             outs = (
                 decoded.bit("000")
@@ -792,7 +795,12 @@ class NonAluModule(Gate):
                 outs >>= (
                     decoded.bit("101")
                     >> stepper[5]
-                    >> ((flags >> ir[4:]).zipped(lambda i, f, ir_l: f >> ir_l >> and_gate) >> or_gate)
+                    >> (
+                        (flags >> ir[4:]).zipped(
+                            lambda i, f, ir_l: f >> ir_l >> and_gate
+                        )
+                        >> or_gate
+                    )
                     >> and_gate
                     >> with_type(("E", "RAM"), ("S", "IAR"))
                     >> with_type(("INSTRUCTION", "J"))
@@ -832,7 +840,9 @@ class Bus1(Gate):
         s, lines = in_lines.pop()
         and_lines, or_line = lines.split(-1)
         not_s = s >> not_gate
-        return and_lines.map(lambda i,l: l >> not_s >> and_gate) >> (or_line >> s >> or_gate)
+        return and_lines.map(lambda i, l: l >> not_s >> and_gate) >> (
+            or_line >> s >> or_gate
+        )
 
 
 class Alu(Gate):
@@ -947,10 +957,14 @@ class IoUnit(Gate):
     def run(self, in_lines: Lines) -> Lines:
         s, e, bus_ = in_lines.split(1, 1)
         with scope("In"):
-            io_in = (bus() >> with_type("IO", ("IO", "IN"))).map(lambda i,l: l >> with_type(("IO", i)))
+            io_in = (bus() >> with_type("IO", ("IO", "IN"))).map(
+                lambda i, l: l >> with_type(("IO", i))
+            )
             e >> io_in >> enabler >> bus_ >> tie
         with scope("Out"):
-            io_out = (s >> bus_ >> byte >> with_type("IO", ("IO", "OUT"))).map(lambda i,l: l >> with_type(("IO", i)))
+            io_out = (s >> bus_ >> byte >> with_type("IO", ("IO", "OUT"))).map(
+                lambda i, l: l >> with_type(("IO", i))
+            )
         return io_in >> io_out
 
 
@@ -963,7 +977,9 @@ class Cpu(Gate):
         stepper_ = clocks[0] >> stepper
         with scope("IR"):
             ir_s = Line("IrS", is_blocking=False)
-            ir = (ir_s >> bus_ >> byte).map(lambda i,l: l >> with_type(("IR", i), "IR"))
+            ir = (ir_s >> bus_ >> byte).map(
+                lambda i, l: l >> with_type(("IR", i), "IR")
+            )
         with scope("ControlFlags"):
             flags = Lines(Line(s, is_blocking=False) for s in "CAEZ") >> with_type(
                 "FLAG"
@@ -1128,19 +1144,88 @@ class Circuit:
         self.inputs_to_ops: Dict[Line, Set[Op]] = collections.defaultdict(set)
         self.outputs_to_ops: Dict[Line, Set[Op]] = collections.defaultdict(set)
         self.tie_ops: Dict[Line, Op] = keydefaultdict(TieOp)
+        self._feed_ids = set()
+        self._feed_lines = Lines()
 
     def push_op(self, op: Op):
+        self.clear_cache()
         for input_line in op.in_lines:
             self.inputs_to_ops[input_line].add(op)
         for output_line in op.out_lines:
             self.outputs_to_ops[output_line].add(op)
 
     def tie(self, from_line: Line, to_line: Line):
+        self.clear_cache()
         self.tie_ops[to_line].add_from_line(from_line)
         self.push_op(self.tie_ops[to_line])
 
+    def clear_cache(self):
+        for tag in ("sources", "lines", "ops"):
+            self.__dict__.pop(tag, None)
+
     def downstream_ops(self, line: Line) -> Set[Op]:
         return self.inputs_to_ops[line]
+
+    @cached_property
+    def sources(self) -> Lines:
+        return Lines(
+            line
+            for line in self.lines
+            if (not line.is_blocking)
+            or (line not in self.tie_ops and line not in self.outputs_to_ops)
+        )
+
+    @cached_property
+    def lines(self) -> Lines:
+        return Lines(
+            line
+            for op in self.ops
+            for line_group in [op.in_lines, op.out_lines]
+            for line in line_group
+        )
+
+    @cached_property
+    def ops(self) -> List[Op]:
+        return list({op for ops in self.inputs_to_ops.values() for op in ops})
+
+    def set_feed(self, lines: Lines):
+        ids = {id(line) for line in lines}
+        if ids == self._feed_ids:
+            return
+        self.__dict__.pop("op_order", None)
+        self._feed_lines = lines
+        self._feed_ids = ids
+
+    @cached_property
+    def op_order(self):
+        order = []
+        queue = collections.deque()
+        visited = set()
+        visited_lines = set(self._feed_lines >> self.sources)
+        for source in visited_lines:
+            for op in self.downstream_ops(source):
+                if all(
+                    in_line in visited_lines or not in_line.is_blocking
+                    for in_line in op.in_lines
+                ):
+                    queue.append(op)
+        while queue:
+            op = queue.popleft()
+            if op in visited:
+                continue
+            order.append(op)
+            visited.add(op)
+            for line in op.out_lines:
+                visited_lines.add(line)
+                for op in self.downstream_ops(line):
+                    if op in visited:
+                        continue
+                    if all(
+                        in_line in visited_lines or not in_line.is_blocking
+                        for in_line in op.in_lines
+                    ):
+                        queue.appendleft(op)
+        return order
 
 
 def bus(n_inputs=None) -> Lines:
@@ -1158,34 +1243,6 @@ class keydefaultdict(collections.defaultdict):
         else:
             ret = self[key] = self.default_factory(key)
             return ret
-
-
-def simulate(
-    feed_dict: FeedDict,
-    circuit: Optional[Circuit] = None,
-    previous_state: Optional[CircuitState] = None,
-) -> Simulation:
-    circuit = circuit_or_default(circuit)
-    if not previous_state:
-        previous_state = {}
-    previous_state = keydefaultdict(lambda line: line.default_value, previous_state)
-    dirty_ops = set()
-
-    def update(op_output: CircuitState):
-        dirty_ops.update(
-            {
-                op
-                for line, value in op_output.items()
-                if previous_state[line] != value
-                for op in circuit.downstream_ops(line)
-            }
-        )
-        previous_state.update(op_output)
-
-    update(feed_dict)
-    while dirty_ops:
-        update(dirty_ops.pop().fn(previous_state))
-    return previous_state
 
 
 class TypedOp(Gate):
@@ -1222,3 +1279,69 @@ def bootloader_program_txt():
 
 def bootloader_program():
     return parser.parse(bootloader_program_txt())
+
+from dataclasses import dataclass, field
+from typing import Any
+
+@dataclass(order=True)
+class PrioritizedItem:
+    priority: str
+    item: Any=field(compare=False)
+
+def simulate(
+    feed_dict: FeedDict,
+    circuit: Optional[Circuit] = None,
+    previous_state: Optional[CircuitState] = None,
+) -> Simulation:
+    circuit = circuit_or_default(circuit)
+    seed_state = feed_dict
+    if not previous_state:
+        seed_state = {source: source.default_value for source in circuit.sources}
+        seed_state.update(feed_dict)
+        previous_state = {}
+    dirty_ops = set()
+    queue = collections.deque()
+    visited_lines = set()
+
+    blocked_queue = queue_module.PriorityQueue()
+    blocked = set()
+
+    def update(op_output: CircuitState, block_feed_dict=True):
+        for line, value in sorted(op_output.items(), key=lambda a: a[0].name):
+            if block_feed_dict and (line in feed_dict):
+                continue
+            if line not in previous_state or previous_state[line] != value:
+                for op in sorted(circuit.downstream_ops(line), key=lambda op: op.name):
+                    if op in dirty_ops:
+                        continue
+                    queue.append(op)
+                    dirty_ops.add(op)
+            previous_state[line] = value
+            visited_lines.add(line)
+    
+    update(seed_state, False)
+
+    while queue or blocked:
+        if queue:
+            op = queue.popleft()
+            if any(
+                line not in visited_lines and line.is_blocking for line in op.in_lines
+            ):
+                if op in blocked:
+                    continue
+                blocked.add(op)
+                blocked_queue.put(PrioritizedItem(op.name, op))
+                continue
+        else:
+            op = blocked_queue.get().item
+            blocked.remove(op)
+        update(
+            op.fn(
+                {
+                    line: previous_state.get(line, line.default_value)
+                    for line in op.in_lines
+                }
+            )
+        )
+        dirty_ops.remove(op)
+    return previous_state

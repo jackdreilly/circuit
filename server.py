@@ -58,7 +58,7 @@ def handle_json(*args, **kwargs):
         return
     program = json.loads(args[0])['program']
     print(program)
-    for simulation in cpu_simulator.simulation(program, frequency=4):
+    for simulation in cpu_simulator.simulation(program, frequency=5):
         send(simulation, json=True)
         socketio.sleep(0.0001)
         if request.sid in disconnected:

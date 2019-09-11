@@ -109,7 +109,7 @@ def simulation(program, frequency=12):
             simulation.update(simulate(feed_dict, circuit, simulation))
             if i % frequency:
                 continue
-            pprint(feed_dict)
+            # pprint(feed_dict)
             out_enablers = set()
             for line in enablers:
                 if simulation[line]:
