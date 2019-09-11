@@ -1,22 +1,36 @@
-from __future__ import annotations
-
 import abc
-import queue as queue_module
 import collections
-import json
 import enum
 import itertools
-from pprint import pprint
+import json
 import parser
+import queue as queue_module
 import random
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+from pprint import pprint
+from typing import (Any, Callable, Dict, Iterable, List, Optional, Set, Tuple,
+                    Union)
 
 from cached_property import cached_property
+from dataclasses_json import dataclass_json
 from typing_extensions import Deque
 
 BYTE_SIZE = 8
+
+class Lines:
+    ...
+class Circuit:
+    ...
+class Line:
+    ...
+class Gate:
+    ...
+class LinesSpec:
+    ...
+class CircuitState:
+    ...
+
 
 
 class Clock:
@@ -278,7 +292,6 @@ class Lines:
 
 LineValue = Union[bool, int]
 
-from dataclasses_json import dataclass_json
 
 
 @dataclass_json
@@ -379,7 +392,7 @@ class Gate(abc.ABC):
 class Op:
     in_lines: Lines
     out_lines: Lines
-    fn: Callable[CircuitState, CircuitState]
+    fn: Callable[[CircuitState], CircuitState]
     name: str
 
     @classmethod
@@ -387,9 +400,9 @@ class Op:
         cls,
         in_lines: LinesSpec,
         out_lines: LinesSpec,
-        fn: Callable[CircuitState, LinesSpec],
+        fn: Callable[[CircuitState], LinesSpec],
         name: str = "op",
-    ) -> Op:
+    ):
         with scope(name):
             return cls(Lines(in_lines), Lines(out_lines), fn, active_name())
 
@@ -1280,8 +1293,6 @@ def bootloader_program_txt():
 def bootloader_program():
     return parser.parse(bootloader_program_txt())
 
-from dataclasses import dataclass, field
-from typing import Any
 
 @dataclass(order=True)
 class PrioritizedItem:

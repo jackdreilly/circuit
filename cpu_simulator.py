@@ -12,17 +12,17 @@ def tag_outputs(circuit, tags, name_filter=""):
     )
 
 
-def simulation(program, frequency=12):
+def simulation(program, frequency=12,beefy=0):
     if isinstance(program, str):
         program = parser.parse(program)
-    RAM.MEM_SIZE = 6
+    RAM.MEM_SIZE = 6 if not beefy else 7
     with new_circuit() as circuit:
         clock = Clock()
         output = clock.lines >> cpu
         iars = tag_outputs(circuit, ["BIT"], "Cpu/IAR")
         irs = tag_outputs(circuit, ["BIT"], "Cpu/IR")
-        n_rows = 8
-        n_cols = 8
+        n_rows = 8 if not beefy else 8
+        n_cols = 8 if not beefy else 16
         rams = {
             (row, col): tag_outputs(
                 circuit, ["BIT"], f"RAMRegister-{row * n_cols + col}/"
