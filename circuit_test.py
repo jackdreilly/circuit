@@ -737,7 +737,7 @@ def test_bus1(circuit):
     )
 
 
-@pytest.mark.skip()
+# @pytest.mark.skip()
 def test_cpu(medium_circuit):
     circuit = medium_circuit
     clock = circuit_module.Clock()
@@ -808,7 +808,7 @@ def test_cpu(medium_circuit):
         return {
             k: v
             for i, program_line in enumerate(program)
-            for k,v in set_lines(rams[(i // n_cols, i % n_cols)], program_line).items()
+            for k, v in set_lines(rams[(i // n_cols, i % n_cols)], program_line).items()
         }
 
     fixed_dict = bootload(bootloader_program)
@@ -821,10 +821,10 @@ def test_cpu(medium_circuit):
             return {line.name for line, value in zip(lines, values) if value}
         if len(lines) != 8:
             decimal = True
-        d_value =int(''.join(map(str,values)), 2)
+        d_value = int("".join(map(str, values)), 2)
         if decimal:
             return d_value
-        return '{0:02x}'.format(d_value)
+        return "{0:02x}".format(d_value)
 
     io_lines = tag_outputs(circuit, ("IO", ("IO", "IN")))
     out_lines = tag_outputs(circuit, ("IO", ("IO", "OUT")))

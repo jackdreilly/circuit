@@ -43,9 +43,10 @@ def hello():
     return jsonify(parser.parse(request.json["program"]))
 
 
+disconnected = set()
 @socketio.on('disconnect', namespace='/test')
 def test_disconnect():
-    print('Client disconnected', request.sid)
+    disconnected.add(request.sid)
 
 @socketio.on('connect', namespace='/test')
 def test_connect():
@@ -56,10 +57,13 @@ def handle_json(*args, **kwargs):
     if not args:
         return
     program = json.loads(args[0])['program']
-    for simulation in cpu_simulator.simulation(program, frequency=12):
-        pprint(simulation)
+    print(program)
+    for simulation in cpu_simulator.simulation(program, frequency=4):
         send(simulation, json=True)
         socketio.sleep(0.0001)
+        if request.sid in disconnected:
+            print("DISCONNECTED!")
+            return
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)

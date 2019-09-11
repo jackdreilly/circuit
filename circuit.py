@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import collections
+import json
 import enum
 import itertools
 import parser
@@ -275,13 +276,22 @@ class Lines:
 
 LineValue = Union[bool, int]
 
+from dataclasses_json import dataclass_json
 
+
+@dataclass_json
 @dataclass(frozen=False, eq=False)
 class Line:
     name: Optional[str] = None
     default_value: LineValue = 0
     is_blocking: bool = True
     line_types: Set[Any] = field(default_factory=set)
+
+    @property
+    def as_json(self):
+        v = json.loads(self.to_json())
+        v["line_types"] = list(map(str, v["line_types"]))
+        return v
 
     def is_type(self, line_type: Any) -> bool:
         return line_type in self.line_types
@@ -380,6 +390,10 @@ class Op:
     ) -> Op:
         with scope(name):
             return cls(Lines(in_lines), Lines(out_lines), fn, active_name())
+
+    @property
+    def as_json(self):
+        return {"op_type": "if"}
 
 
 def _if(lines: LinesSpec, true_value: bool = True) -> Lines:
@@ -1079,6 +1093,10 @@ class TieOp:
         self._from_lines = set()
         self.name = "/".join([to_line.name, "tie"])
 
+    @property
+    def as_json(self):
+        return {"op_type": "tie"}
+
     @cached_property
     def in_lines(self) -> Lines:
         return Lines(self.from_lines)
@@ -1110,88 +1128,19 @@ class Circuit:
         self.inputs_to_ops: Dict[Line, Set[Op]] = collections.defaultdict(set)
         self.outputs_to_ops: Dict[Line, Set[Op]] = collections.defaultdict(set)
         self.tie_ops: Dict[Line, Op] = keydefaultdict(TieOp)
-        self._feed_ids = set()
-        self._feed_lines = Lines()
 
     def push_op(self, op: Op):
-        self.clear_cache()
         for input_line in op.in_lines:
             self.inputs_to_ops[input_line].add(op)
         for output_line in op.out_lines:
             self.outputs_to_ops[output_line].add(op)
 
     def tie(self, from_line: Line, to_line: Line):
-        self.clear_cache()
         self.tie_ops[to_line].add_from_line(from_line)
         self.push_op(self.tie_ops[to_line])
 
-    def clear_cache(self):
-        for tag in ("sources", "lines", "ops"):
-            self.__dict__.pop(tag, None)
-
     def downstream_ops(self, line: Line) -> Set[Op]:
         return self.inputs_to_ops[line]
-
-    @cached_property
-    def sources(self) -> Lines:
-        return Lines(
-            line
-            for line in self.lines
-            if (not line.is_blocking)
-            or (line not in self.tie_ops and line not in self.outputs_to_ops)
-        )
-
-    @cached_property
-    def lines(self) -> Lines:
-        return Lines(
-            line
-            for op in self.ops
-            for line_group in [op.in_lines, op.out_lines]
-            for line in line_group
-        )
-
-    @cached_property
-    def ops(self) -> List[Op]:
-        return list({op for ops in self.inputs_to_ops.values() for op in ops})
-
-    def set_feed(self, lines: Lines):
-        ids = {id(line) for line in lines}
-        if ids == self._feed_ids:
-            return
-        self.__dict__.pop("op_order", None)
-        self._feed_lines = lines
-        self._feed_ids = ids
-
-    @cached_property
-    def op_order(self):
-        order = []
-        queue = collections.deque()
-        visited = set()
-        visited_lines = set(self._feed_lines >> self.sources)
-        for source in visited_lines:
-            for op in self.downstream_ops(source):
-                if all(
-                    in_line in visited_lines or not in_line.is_blocking
-                    for in_line in op.in_lines
-                ):
-                    queue.append(op)
-        while queue:
-            op = queue.popleft()
-            if op in visited:
-                continue
-            order.append(op)
-            visited.add(op)
-            for line in op.out_lines:
-                visited_lines.add(line)
-                for op in self.downstream_ops(line):
-                    if op in visited:
-                        continue
-                    if all(
-                        in_line in visited_lines or not in_line.is_blocking
-                        for in_line in op.in_lines
-                    ):
-                        queue.appendleft(op)
-        return order
 
 
 def bus(n_inputs=None) -> Lines:
@@ -1217,25 +1166,26 @@ def simulate(
     previous_state: Optional[CircuitState] = None,
 ) -> Simulation:
     circuit = circuit_or_default(circuit)
-    circuit.set_feed(Lines(feed_dict))
     if not previous_state:
         previous_state = {}
     previous_state = keydefaultdict(lambda line: line.default_value, previous_state)
-    previous_state.update(feed_dict)
-    ops = circuit.op_order
-    while ops:
-        stable = True
-        stable_count = 0
-        for op in ops:
-            for line, value in op.fn(previous_state).items():
-                if line in feed_dict:
-                    continue
-                stable &= previous_state[line] == value
-                previous_state[line] = value
-            if stable:
-                stable_count += 1
-        ops = ops[stable_count:]
-    return dict(previous_state)
+    dirty_ops = set()
+
+    def update(op_output: CircuitState):
+        dirty_ops.update(
+            {
+                op
+                for line, value in op_output.items()
+                if previous_state[line] != value
+                for op in circuit.downstream_ops(line)
+            }
+        )
+        previous_state.update(op_output)
+
+    update(feed_dict)
+    while dirty_ops:
+        update(dirty_ops.pop().fn(previous_state))
+    return previous_state
 
 
 class TypedOp(Gate):
@@ -1253,13 +1203,6 @@ class TypedOp(Gate):
 
 def with_type(*line_types) -> Op:
     return TypedOp(line_types)
-
-
-class Computer:
-    def __init__(self, circuit):
-        self.circuit = circuit
-        with scope("BUS"):
-            self.bus = bus()
 
 
 def bootloader_program_txt():

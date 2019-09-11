@@ -1,3 +1,4 @@
+import json
 import collections
 from pprint import pprint
 
@@ -78,11 +79,16 @@ def draw(circuit, feed_dict, previous_state):
 def to_networkx(circuit: Circuit, feed_dict: CircuitState) -> networkx.DiGraph:
     net = networkx.DiGraph()
     sources = set(circuit.sources).union(feed_dict.keys())
+    for op in circuit.ops:
+        net.add_node(id(op),op=op.as_json,source=False,source_value=False)
     for source in sources:
+        net.add_node(id(source),op={'op_type': 'source'},source=True, source_value=bool(feed_dict.get(source, source.default_value)))
         for op in circuit.downstream_ops(source):
-            net.add_edge(id(source), id(op))
+            net.add_edge(id(source), id(op), line=source.as_json, id=id(source))
     for op in circuit.ops:
         for out_line in op.out_lines:
             for out_op in circuit.downstream_ops(out_line):
-                net.add_edge(id(op), id(out_op))
-    return net
+                net.add_edge(id(op), id(out_op), line=out_line.as_json, id=id(out_line))
+    js = networkx.readwrite.json_graph.node_link_data(net)
+    with open('graph.json', 'w') as fn:
+        json.dump(js, fn)
