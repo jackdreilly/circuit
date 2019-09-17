@@ -4,6 +4,7 @@ import parser
 from flask import Flask, jsonify, request
 from flask_cors import CORS, cross_origin
 from flask_socketio import SocketIO, emit, send
+import os
 
 import cpu_simulator
 
@@ -12,6 +13,7 @@ cors = CORS(app)
 app.config['CORS_HEADERS'] = 'Content-Type'
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*")
+
 
 @app.route("/parse", methods=["POST"])
 def parse():
@@ -22,6 +24,7 @@ disconnected = set()
 @socketio.on('disconnect', namespace='/test')
 def handle_disconnect():
     disconnected.add(request.sid)
+
 
 @socketio.on('json', namespace='/test')
 def handle_json(*args, **kwargs):
@@ -38,5 +41,7 @@ def handle_json(*args, **kwargs):
             print("DISCONNECTED!")
             return
 
-if __name__ == '__main__':
-    socketio.run(app, debug=True)
+
+if __name__ == "__main__":
+    socketio.run(debug=True, host='0.0.0.0',
+                 port=int(os.environ.get('PORT', 8080)))
