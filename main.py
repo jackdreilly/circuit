@@ -21,10 +21,16 @@ def parse():
 
 
 disconnected = set()
+paused = set()
 @socketio.on('disconnect', namespace='/test')
 def handle_disconnect():
     disconnected.add(request.sid)
-
+@socketio.on('pause', namespace='/test')
+def handle_pause():
+    paused.add(request.sid)
+@socketio.on('resume', namespace='/test')
+def handle_resume():
+    paused.discard(request.sid)
 
 @socketio.on('json', namespace='/test')
 def handle_json(*args, **kwargs):
@@ -34,11 +40,19 @@ def handle_json(*args, **kwargs):
     program = payload['program']
     beefy = bool(payload.get('beefy', 0))
     print(program)
-    for simulation in cpu_simulator.simulation(program, frequency=5, beefy=beefy):
-        send(simulation, json=True)
+    pack= []
+    for simulation in cpu_simulator.simulation(program, frequency=1, beefy=beefy):
+        pack.append(simulation)
+        if not ((len(pack) + 1) % 100):
+            send(pack, json=True)
+            pack = []
         socketio.sleep(0.0001)
+        while request.sid in paused:
+            socketio.sleep(1)
         if request.sid in disconnected:
             print("DISCONNECTED!")
+            disconnected.discard(request.sid)
+            paused.discard(request.sid)
             return
 
 
